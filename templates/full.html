@@ -1,0 +1,37 @@
+{{define "full.html"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Server Full - I2P WebIRC</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <meta http-equiv="refresh" content="30">
+</head>
+<body class="theme-{{.Theme}}">
+<div class="container center">
+    <div class="welcome-box">
+        <h1>I2P WebIRC</h1>
+        <p class="subtitle">Server At Capacity</p>
+
+        <div class="error-message">
+            <h2>Server Full</h2>
+            <p>The server is currently at maximum capacity ({{.CurrentUsers}}/{{.MaxUsers}} users).</p>
+            <p class="status-detail">Please try again in a few minutes.</p>
+        </div>
+
+        <div class="info">
+            <p>This page will automatically refresh every 30 seconds.</p>
+            <p>Or you can <a href="/">try again now</a>.</p>
+        </div>
+
+        <div class="info">
+            <h3>Why is there a limit?</h3>
+            <p>Each user connection creates a unique I2P tunnel, which requires system resources.</p>
+            <p>The limit helps ensure stable performance for all users.</p>
+        </div>
+    </div>
+</div>
+</body>
+</html>
+{{end}}

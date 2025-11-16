@@ -1,0 +1,103 @@
+{{define "messages.html"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Messages</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <meta http-equiv="refresh" content="10">
+</head>
+<body class="theme-{{.Theme}} messages-frame">
+<div class="messages-container">
+    <div class="topbar">
+        <div class="channel-info">
+            <span class="channel-name">{{.Channel}}</span>
+            <span class="user-count">({{len .Users}} users)</span>
+        </div>
+        <div class="status-info">
+            <span class="status status-{{.Status}}">{{.Status}}</span>
+            <span class="nick">{{.Nick}}</span>
+        </div>
+    </div>
+
+    <div class="main-content">
+        <div class="sidebar">
+            <h3>Channels</h3>
+            <ul class="channel-list">
+                {{range .AllChannels}}
+                <li class="channel-item{{if eq .Name $.Channel}} active{{end}}">
+                    <a href="/chan/{{urlEscape .Name}}" target="_parent">
+                        {{if .IsDM}}
+                        <span class="dm-icon">@</span>
+                        {{end}}
+                        <span class="channel-name-text">{{.Name}}</span>
+                        {{if .UnreadCount}}
+                        <span class="unread-badge">{{.UnreadCount}}</span>
+                        {{end}}
+                    </a>
+                </li>
+                {{else}}
+                <li class="no-channels">No channels</li>
+                {{end}}
+            </ul>
+
+            <div class="sidebar-footer">
+                <details>
+                    <summary>Users ({{len .Users}})</summary>
+                    <ul class="user-list-compact">
+                        {{range .Users}}
+                        <li class="user{{if eq . $.Nick}} current-user{{end}}">{{.}}</li>
+                        {{else}}
+                        <li class="no-users">No users</li>
+                        {{end}}
+                    </ul>
+                </details>
+            </div>
+        </div>
+
+        <div class="chat-area">
+            <div class="messages">
+                {{range .Messages}}
+                {{$shouldShow := true}}
+                {{if $.HideJoinPart}}
+                    {{if or (eq .Kind "join") (eq .Kind "part") (eq .Kind "quit")}}
+                        {{$shouldShow = false}}
+                    {{end}}
+                {{end}}
+                {{if $shouldShow}}
+                <div class="message msg-{{.Kind}}">
+                    <span class="timestamp">[{{.Time.Format "15:04"}}]</span>
+                    {{if eq .Kind "privmsg"}}
+                    <span class="nick">&lt;{{.Prefix}}&gt;</span>
+                    <span class="text">{{.Text}}</span>
+                    {{else if eq .Kind "action"}}
+                    <span class="action">* {{.Prefix}} {{.Text}}</span>
+                    {{else if eq .Kind "join"}}
+                    <span class="event">→ {{.Prefix}} {{.Text}}</span>
+                    {{else if eq .Kind "part"}}
+                    <span class="event">← {{.Prefix}} {{.Text}}</span>
+                    {{else if eq .Kind "quit"}}
+                    <span class="event">⇐ {{.Prefix}} {{.Text}}</span>
+                    {{else if eq .Kind "notice"}}
+                    <span class="notice">-{{.Prefix}}- {{.Text}}</span>
+                    {{else if eq .Kind "system"}}
+                    <span class="system">** {{.Text}}</span>
+                    {{else}}
+                    <span class="text">{{.Prefix}}: {{.Text}}</span>
+                    {{end}}
+                </div>
+                {{end}}
+                {{else}}
+                <div class="message msg-system">
+                    <span class="system">No messages yet. Say hello!</span>
+                </div>
+                {{end}}
+                <div id="bottom"></div>
+            </div>
+        </div>
+    </div>
+</div>
+</body>
+</html>
+{{end}}

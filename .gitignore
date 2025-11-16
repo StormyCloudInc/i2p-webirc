@@ -1,0 +1,45 @@
+# Binaries
+webirc
+cmd/webirc/webirc
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# Dependency directories
+vendor/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Deployment scripts with credentials
+*.exp
+ssh-helper.exp
+scp-helper.exp
+
+# Logs
+*.log
+webirc.log
+
+# Environment files
+.env
+.env.local
+*.key
+*.pem

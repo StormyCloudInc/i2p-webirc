@@ -1,0 +1,56 @@
+{{define "index.html"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>I2P WebIRC - Connect</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="theme-{{.Theme}}">
+<div class="container center">
+    <div class="welcome-box">
+        <h1>I2P WebIRC</h1>
+        <p class="subtitle">JavaScript-free IRC client over I2P</p>
+
+        <form method="POST" action="/join" class="join-form">
+            <div class="form-group">
+                <label for="nick">Nickname:</label>
+                <input type="text" id="nick" name="nick" value="{{.DefaultNick}}" required>
+            </div>
+
+            <div class="form-group">
+                <label for="channel">Channel:</label>
+                <input type="text" id="channel" name="channel" value="{{.DefaultChannel}}" required>
+            </div>
+
+            <button type="submit" class="btn btn-primary">Join Chat</button>
+        </form>
+
+        {{if .LastChannel}}
+        <div class="last-channel">
+            <p>Last channel: <strong>{{.LastChannel}}</strong></p>
+            <form method="POST" action="/join">
+                <input type="hidden" name="nick" value="{{.DefaultNick}}">
+                <input type="hidden" name="channel" value="{{.LastChannel}}">
+                <button type="submit" class="btn btn-secondary">Rejoin</button>
+            </form>
+        </div>
+        {{end}}
+
+        <div class="info">
+            <h2>Available Commands</h2>
+            <ul>
+                <li><code>/nick NEWNICK</code> - Change nickname</li>
+                <li><code>/join #channel</code> - Join another channel</li>
+                <li><code>/msg NICKNAME MESSAGE</code> - Send a direct message</li>
+                <li><code>/me ACTION</code> - Send an action message</li>
+                <li><code>/list</code> - List available channels</li>
+                <li><code>/part</code> - Leave current channel</li>
+            </ul>
+        </div>
+    </div>
+</div>
+</body>
+</html>
+{{end}}

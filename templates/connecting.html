@@ -1,0 +1,71 @@
+{{define "connecting.html"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Connecting - I2P WebIRC</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <meta http-equiv="refresh" content="2">
+</head>
+<body class="theme-{{.Theme}}">
+<div class="container center">
+    <div class="welcome-box">
+        <h1>I2P WebIRC</h1>
+        <p class="subtitle">Connecting to IRC over I2P...</p>
+
+        <div class="connecting-status">
+            {{if .Registered}}
+            <div class="status-message">
+                <h2>Joining Channel</h2>
+                <p>Sending JOIN command to {{.Channel}}...</p>
+                <p class="status-detail">Waiting for channel user list...</p>
+            </div>
+            {{else if eq .Status "connecting"}}
+            <div class="status-message">
+                <h2>Establishing I2P Connection</h2>
+                <p>Building encrypted tunnel through I2P network...</p>
+                <p class="status-detail">This may take 10-30 seconds</p>
+            </div>
+            {{else if eq .Status "connected"}}
+            <div class="status-message">
+                <h2>Registering with IRC Server</h2>
+                <p>Waiting for server to complete registration...</p>
+                <p class="status-detail">Almost ready...</p>
+            </div>
+            {{else if eq .Status "failed"}}
+            <div class="status-message error">
+                <h2>Connection Failed</h2>
+                <p>Unable to establish I2P connection</p>
+                <p class="status-detail"><a href="/">Try again</a></p>
+            </div>
+            {{else}}
+            <div class="status-message">
+                <h2>Connecting...</h2>
+                <p>Status: {{.Status}}</p>
+            </div>
+            {{end}}
+
+            <div class="progress-indicator">
+                <p>
+                    {{if .Registered}}
+                    ✓ Connected | ✓ Registered | ⏳ Joining {{.Channel}}...
+                    {{else if eq .Status "connected"}}
+                    ✓ Connected | ⏳ Registering...
+                    {{else}}
+                    ⏳ Connecting to I2P...
+                    {{end}}
+                </p>
+            </div>
+
+            <div class="info">
+                <p><small>Nick: <strong>{{.Nick}}</strong></small></p>
+                <p><small>Channel: <strong>{{.Channel}}</strong></small></p>
+                <p><small>Page auto-refreshes every 2 seconds</small></p>
+            </div>
+        </div>
+    </div>
+</div>
+</body>
+</html>
+{{end}}
