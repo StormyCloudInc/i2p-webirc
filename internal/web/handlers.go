@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dustinfields/i2p-irc/internal/bot"
 	"github.com/dustinfields/i2p-irc/internal/irc"
 )
 
@@ -35,14 +36,16 @@ type Handler struct {
 	config    Config
 	sessions  *irc.SessionStore
 	templates *template.Template
+	bot       *bot.HistoryBot
 }
 
 // NewHandler creates a new HTTP handler
-func NewHandler(config Config, sessions *irc.SessionStore, templates *template.Template) *Handler {
+func NewHandler(config Config, sessions *irc.SessionStore, templates *template.Template, historyBot *bot.HistoryBot) *Handler {
 	return &Handler{
 		config:    config,
 		sessions:  sessions,
 		templates: templates,
+		bot:       historyBot,
 	}
 }
 
@@ -51,6 +54,54 @@ func generateSessionID() string {
 	bytes := make([]byte, SessionIDLength)
 	rand.Read(bytes)
 	return hex.EncodeToString(bytes)
+}
+
+// getMessagesWithHistory gets channel messages, prepending bot history if available and channel is new
+func (h *Handler) getMessagesWithHistory(channel string, ch *irc.ChannelState) []irc.ChatMessage {
+	// If history already loaded for this channel, just return current messages
+	if ch.IsHistoryLoaded() {
+		return ch.GetMessages()
+	}
+
+	// Mark history as loaded (even if we don't find any, to avoid repeated lookups)
+	ch.SetHistoryLoaded()
+
+	// If no bot or channel doesn't start with #, return messages as-is
+	if h.bot == nil || !strings.HasPrefix(channel, "#") {
+		return ch.GetMessages()
+	}
+
+	// Get bot history for this channel
+	botHistory := h.bot.GetHistory(channel, 10)
+	if len(botHistory) == 0 {
+		return ch.GetMessages()
+	}
+
+	// Convert bot messages to IRC ChatMessages and add them to channel state
+	// Add in reverse order so oldest messages appear first
+	for i := len(botHistory) - 1; i >= 0; i-- {
+		msg := botHistory[i]
+
+		// Skip join/part events - users can see these from current activity
+		if msg.Type == "join" || msg.Type == "part" {
+			continue
+		}
+
+		kind := "privmsg"
+		if msg.Type == "action" {
+			kind = "action"
+		}
+
+		// Add to channel message buffer
+		ch.AddMessage(irc.ChatMessage{
+			Time:   msg.Timestamp,
+			Prefix: msg.Nick,
+			Text:   msg.Content,
+			Kind:   kind,
+		})
+	}
+
+	return ch.GetMessages()
 }
 
 // getOrCreateSessionID gets or creates a session ID from cookies
@@ -213,6 +264,7 @@ func (h *Handler) ChannelHandler(w http.ResponseWriter, r *http.Request) {
 		ch = session.GetOrCreateChannel(channel)
 	}
 
+	// Get messages (history loading happens in MessagesHandler iframe)
 	messages := ch.GetMessages()
 	users := ch.GetUsers()
 	sort.Strings(users)
@@ -271,7 +323,8 @@ func (h *Handler) MessagesHandler(w http.ResponseWriter, r *http.Request) {
 		ch = session.GetOrCreateChannel(channel)
 	}
 
-	messages := ch.GetMessages()
+	// Get messages with bot history if available
+	messages := h.getMessagesWithHistory(channel, ch)
 	users := ch.GetUsers()
 	sort.Strings(users)
 
@@ -375,6 +428,59 @@ func (h *Handler) StatusHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Current Channel: %s\n", session.GetCurrentChannel())
 	} else {
 		fmt.Fprintf(w, "Session: Not initialized\n")
+	}
+}
+
+// DebugHistoryHandler handles GET /debug/history?channel=NAME - shows what bot has recorded
+func (h *Handler) DebugHistoryHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+
+	if h.bot == nil {
+		fmt.Fprintf(w, "History Bot Debug\n")
+		fmt.Fprintf(w, "=================\n\n")
+		fmt.Fprintf(w, "ERROR: History bot is not running\n")
+		return
+	}
+
+	channel := r.URL.Query().Get("channel")
+	if channel == "" {
+		fmt.Fprintf(w, "History Bot Debug\n")
+		fmt.Fprintf(w, "=================\n\n")
+		fmt.Fprintf(w, "Usage: /debug/history?channel=#i2p-chat\n")
+		fmt.Fprintf(w, "\nAvailable channels: #i2p-chat, #i2p\n")
+		return
+	}
+
+	// Get up to 50 messages from bot history
+	messages := h.bot.GetHistory(channel, 50)
+
+	fmt.Fprintf(w, "History Bot Debug\n")
+	fmt.Fprintf(w, "=================\n\n")
+	fmt.Fprintf(w, "Channel: %s\n", channel)
+	fmt.Fprintf(w, "Messages stored: %d\n\n", len(messages))
+
+	if len(messages) == 0 {
+		fmt.Fprintf(w, "No messages recorded for this channel.\n")
+		fmt.Fprintf(w, "\nPossible reasons:\n")
+		fmt.Fprintf(w, "- Bot hasn't joined this channel\n")
+		fmt.Fprintf(w, "- No activity in channel yet\n")
+		fmt.Fprintf(w, "- Channel name is case-sensitive (try lowercase)\n")
+		return
+	}
+
+	fmt.Fprintf(w, "Recent messages:\n")
+	fmt.Fprintf(w, "----------------\n\n")
+
+	for i, msg := range messages {
+		fmt.Fprintf(w, "[%d] %s\n", i+1, msg.Timestamp.Format("15:04:05"))
+		fmt.Fprintf(w, "    Type: %s\n", msg.Type)
+		fmt.Fprintf(w, "    Nick: %s\n", msg.Nick)
+		if msg.Content != "" {
+			fmt.Fprintf(w, "    Content: %s\n", msg.Content)
+		} else {
+			fmt.Fprintf(w, "    Content: (empty - %s event)\n", msg.Type)
+		}
+		fmt.Fprintf(w, "\n")
 	}
 }
 

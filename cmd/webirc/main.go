@@ -59,6 +59,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dustinfields/i2p-irc/internal/bot"
 	"github.com/dustinfields/i2p-irc/internal/irc"
 	"github.com/dustinfields/i2p-irc/internal/web"
 )
@@ -70,9 +71,10 @@ const (
 )
 
 var (
-	listenAddr = flag.String("listen", ":8080", "HTTP server listen address")
-	samAddr    = flag.String("sam-addr", "127.0.0.1:7656", "SAM bridge address")
-	ircDest    = flag.String("irc-dest", "irc.example.i2p", "I2P IRC server destination")
+	listenAddr  = flag.String("listen", ":8080", "HTTP server listen address")
+	samAddr     = flag.String("sam-addr", "127.0.0.1:7656", "SAM bridge address")
+	ircDest     = flag.String("irc-dest", "irc.example.i2p", "I2P IRC server destination")
+	botChannels = flag.String("bot-channels", "#i2p-chat,#i2p", "Comma-separated list of channels for history bot to monitor")
 )
 
 func main() {
@@ -95,13 +97,40 @@ func main() {
 		log.Fatalf("Failed to load templates: %v", err)
 	}
 
+	// Parse bot channels
+	var channels []string
+	if *botChannels != "" {
+		for _, ch := range strings.Split(*botChannels, ",") {
+			ch = strings.TrimSpace(ch)
+			if ch != "" {
+				channels = append(channels, ch)
+			}
+		}
+	}
+
+	// Create and start history bot if channels are configured
+	var historyBot *bot.HistoryBot
+	if len(channels) > 0 {
+		log.Printf("Starting history bot for channels: %v", channels)
+		historyBot = bot.NewHistoryBot("HistoryBot", *samAddr, *ircDest, channels, 50)
+		if err := historyBot.Start(); err != nil {
+			log.Printf("Warning: Failed to start history bot: %v", err)
+			log.Printf("Continuing without message history support")
+			historyBot = nil
+		} else {
+			log.Printf("History bot started successfully")
+		}
+	} else {
+		log.Printf("No bot channels configured, message history disabled")
+	}
+
 	// Create handler
 	config := web.Config{
 		SAMAddress: *samAddr,
 		IRCDest:    *ircDest,
 		MaxUsers:   MaxConcurrentUsers,
 	}
-	handler := web.NewHandler(config, sessions, templates)
+	handler := web.NewHandler(config, sessions, templates, historyBot)
 
 	// Setup routes
 	http.HandleFunc("/", handler.IndexHandler)
@@ -118,6 +147,7 @@ func main() {
 	http.HandleFunc("/send", handler.SendHandler)
 	http.HandleFunc("/settings", handler.SettingsHandler)
 	http.HandleFunc("/status", handler.StatusHandler)
+	http.HandleFunc("/debug/history", handler.DebugHistoryHandler)
 
 	// Serve static files
 	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))

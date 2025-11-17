@@ -28,9 +28,10 @@ type ChatMessage struct {
 
 // ChannelState holds state for a single IRC channel
 type ChannelState struct {
-	mu       sync.RWMutex
-	messages []ChatMessage
-	users    map[string]bool
+	mu            sync.RWMutex
+	messages      []ChatMessage
+	users         map[string]bool
+	historyLoaded bool
 }
 
 // AddMessage adds a message to the channel's ring buffer
@@ -94,6 +95,20 @@ func (c *ChannelState) RenameUser(oldNick, newNick string) {
 		delete(c.users, oldNick)
 		c.users[newNick] = true
 	}
+}
+
+// IsHistoryLoaded returns whether history has been loaded for this channel
+func (c *ChannelState) IsHistoryLoaded() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.historyLoaded
+}
+
+// SetHistoryLoaded marks history as loaded for this channel
+func (c *ChannelState) SetHistoryLoaded() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.historyLoaded = true
 }
 
 // IRCSession represents a single user's IRC session
