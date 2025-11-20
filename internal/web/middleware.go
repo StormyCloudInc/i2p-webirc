@@ -9,11 +9,8 @@ import (
 // SecurityHeadersMiddleware adds security headers to responses
 func (h *Handler) SecurityHeadersMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Content Security Policy
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self';")
-
-		// Prevent clickjacking
-		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		// Content Security Policy - allow embedding in I2P website iframes
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self'; frame-ancestors 'self' https://beta.i2p.net https://i2p.net https://geti2p.net")
 
 		// Prevent MIME type sniffing
 		w.Header().Set("X-Content-Type-Options", "nosniff")

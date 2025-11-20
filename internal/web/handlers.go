@@ -104,15 +104,6 @@ func (h *Handler) getMessagesWithHistory(channel string, ch *irc.ChannelState) [
 	return ch.GetMessages()
 }
 
-// SecurityHeadersMiddleware adds security headers to all responses
-func (h *Handler) SecurityHeadersMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Allow embedding in I2P website iframes
-		w.Header().Set("Content-Security-Policy", "frame-ancestors 'self' https://beta.i2p.net https://i2p.net https://geti2p.net")
-		next.ServeHTTP(w, r)
-	})
-}
-
 // getOrCreateSessionID gets or creates a session ID from cookies
 func (h *Handler) getOrCreateSessionID(w http.ResponseWriter, r *http.Request) string {
 	cookie, err := r.Cookie(SessionCookieName)
