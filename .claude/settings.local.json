@@ -7,7 +7,8 @@
       "Bash(go build:*)",
       "Bash(scp:*)",
       "Bash(git add:*)",
-      "Bash(git commit -m \"$(cat <<''EOF''\nFix auto-join for popular channels\n\nWhen users click on popular channels in the sidebar, automatically\nsend IRC JOIN command if they''re not already in the channel (detected\nby checking if user list is empty).\n\nThis fixes the issue where clicking a popular channel would load the\nview but not actually join the IRC channel.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
+      "Bash(git commit -m \"$(cat <<''EOF''\nFix auto-join for popular channels\n\nWhen users click on popular channels in the sidebar, automatically\nsend IRC JOIN command if they''re not already in the channel (detected\nby checking if user list is empty).\n\nThis fixes the issue where clicking a popular channel would load the\nview but not actually join the IRC channel.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []
