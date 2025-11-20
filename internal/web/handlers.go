@@ -18,17 +18,17 @@ import (
 )
 
 const (
-	SessionCookieName  = "webirc_session"
-	SessionIDLength    = 32
-	PrefHideJoinPart   = "hide_joinpart"
-	PrefTheme          = "theme"
+	SessionCookieName = "webirc_session"
+	SessionIDLength   = 32
+	PrefHideJoinPart  = "hide_joinpart"
+	PrefTheme         = "theme"
 )
 
 // Config holds configuration for the web handlers
 type Config struct {
-	SAMAddress   string
-	IRCDest      string
-	MaxUsers     int
+	SAMAddress string
+	IRCDest    string
+	MaxUsers   int
 }
 
 // Handler holds the HTTP handler state
@@ -119,6 +119,7 @@ func (h *Handler) getOrCreateSessionID(w http.ResponseWriter, r *http.Request) s
 		Path:     "/",
 		MaxAge:   86400 * 7, // 7 days
 		HttpOnly: true,
+		Secure:   true, // Enforce secure cookies
 		SameSite: http.SameSiteLaxMode,
 	})
 
@@ -141,6 +142,7 @@ func (h *Handler) IndexHandler(w http.ResponseWriter, r *http.Request) {
 		"DefaultChannel": "#i2p-chat",
 		"LastChannel":    "",
 		"Theme":          theme,
+		"CSRFToken":      h.GetCSRFToken(r),
 	}
 
 	if session != nil {
@@ -192,6 +194,7 @@ func (h *Handler) JoinHandler(w http.ResponseWriter, r *http.Request) {
 				"CurrentUsers": h.sessions.Count(),
 				"MaxUsers":     h.config.MaxUsers,
 				"Theme":        theme,
+				"CSRFToken":    h.GetCSRFToken(r),
 			}
 			if err := h.templates.ExecuteTemplate(w, "full.html", data); err != nil {
 				http.Error(w, "Server at capacity", http.StatusServiceUnavailable)
@@ -285,6 +288,7 @@ func (h *Handler) ChannelHandler(w http.ResponseWriter, r *http.Request) {
 		"HideJoinPart": hideJoinPart,
 		"Theme":        theme,
 		"AllChannels":  allChannels,
+		"CSRFToken":    h.GetCSRFToken(r),
 	}
 
 	if err := h.templates.ExecuteTemplate(w, "channel.html", data); err != nil {
@@ -344,6 +348,7 @@ func (h *Handler) MessagesHandler(w http.ResponseWriter, r *http.Request) {
 		"HideJoinPart": hideJoinPart,
 		"Theme":        theme,
 		"AllChannels":  allChannels,
+		"CSRFToken":    h.GetCSRFToken(r),
 	}
 
 	if err := h.templates.ExecuteTemplate(w, "messages.html", data); err != nil {
@@ -402,6 +407,7 @@ func (h *Handler) ConnectingHandler(w http.ResponseWriter, r *http.Request) {
 		"Nick":       session.GetNick(),
 		"Channel":    channel,
 		"Theme":      theme,
+		"CSRFToken":  h.GetCSRFToken(r),
 	}
 
 	if err := h.templates.ExecuteTemplate(w, "connecting.html", data); err != nil {
@@ -645,6 +651,7 @@ func (h *Handler) setPref(w http.ResponseWriter, name, value string) {
 		Path:     "/",
 		MaxAge:   86400 * 365, // 1 year
 		HttpOnly: true,
+		Secure:   true, // Enforce secure cookies
 		SameSite: http.SameSiteLaxMode,
 	})
 }

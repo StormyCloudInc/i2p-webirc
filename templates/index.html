@@ -14,6 +14,7 @@
         <p class="subtitle">JavaScript-free IRC client over I2P</p>
 
         <form method="POST" action="/join" class="join-form">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
             <div class="form-group">
                 <label for="nick">Nickname:</label>
                 <input type="text" id="nick" name="nick" value="{{.DefaultNick}}" required>
@@ -31,6 +32,7 @@
         <div class="last-channel">
             <p>Last channel: <strong>{{.LastChannel}}</strong></p>
             <form method="POST" action="/join">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                 <input type="hidden" name="nick" value="{{.DefaultNick}}">
                 <input type="hidden" name="channel" value="{{.LastChannel}}">
                 <button type="submit" class="btn btn-secondary">Rejoin</button>

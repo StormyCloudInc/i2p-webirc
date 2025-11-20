@@ -1,57 +1,63 @@
 {{define "channel.html"}}
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{.Channel}} - I2P WebIRC</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
+
 <body class="theme-{{.Theme}} has-iframe-container">
-<div class="iframe-container">
-    <iframe src="/chan/{{urlEscape .Channel}}/messages" class="messages-iframe" name="messages"></iframe>
+    <div class="iframe-container">
+        <iframe src="/chan/{{urlEscape .Channel}}/messages" class="messages-iframe" name="messages"></iframe>
 
-    <div class="input-area-fixed">
-        <form method="POST" action="/send" target="messages">
-            <input type="hidden" name="channel" value="{{.Channel}}">
-            <input type="text" name="message" placeholder="Type a message or /command..." autocomplete="off" autofocus>
-            <button type="submit" class="btn btn-send">Send</button>
-        </form>
+        <div class="input-area-fixed">
+            <form method="POST" action="/send" target="messages">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <input type="hidden" name="channel" value="{{.Channel}}">
+                <input type="text" name="message" placeholder="Type a message or /command..." autocomplete="off"
+                    autofocus>
+                <button type="submit" class="btn btn-send">Send</button>
+            </form>
+        </div>
     </div>
-</div>
 
-<div id="settings" class="settings-panel">
-    <div class="settings-content">
-        <h2>Settings</h2>
-        <form method="POST" action="/settings">
-            <input type="hidden" name="channel" value="{{.Channel}}">
+    <div id="settings" class="settings-panel">
+        <div class="settings-content">
+            <h2>Settings</h2>
+            <form method="POST" action="/settings">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <input type="hidden" name="channel" value="{{.Channel}}">
 
-            <div class="setting-item">
-                <label>
-                    <input type="checkbox" name="hide_joinpart" {{if .HideJoinPart}}checked{{end}}>
-                    Hide join/part messages
-                </label>
-            </div>
+                <div class="setting-item">
+                    <label>
+                        <input type="checkbox" name="hide_joinpart" {{if .HideJoinPart}}checked{{end}}>
+                        Hide join/part messages
+                    </label>
+                </div>
 
-            <div class="setting-item">
-                <label>Theme:</label>
-                <label>
-                    <input type="radio" name="theme" value="dark" {{if eq .Theme "dark"}}checked{{end}}>
-                    Dark
-                </label>
-                <label>
-                    <input type="radio" name="theme" value="light" {{if eq .Theme "light"}}checked{{end}}>
-                    Light
-                </label>
-            </div>
+                <div class="setting-item">
+                    <label>Theme:</label>
+                    <label>
+                        <input type="radio" name="theme" value="dark" {{if eq .Theme "dark" }}checked{{end}}>
+                        Dark
+                    </label>
+                    <label>
+                        <input type="radio" name="theme" value="light" {{if eq .Theme "light" }}checked{{end}}>
+                        Light
+                    </label>
+                </div>
 
-            <div class="setting-actions">
-                <button type="submit" class="btn">Save Settings</button>
-                <a href="/chan/{{urlEscape .Channel}}" class="btn btn-secondary">Cancel</a>
-            </div>
-        </form>
+                <div class="setting-actions">
+                    <button type="submit" class="btn">Save Settings</button>
+                    <a href="/chan/{{urlEscape .Channel}}" class="btn btn-secondary">Cancel</a>
+                </div>
+            </form>
+        </div>
     </div>
-</div>
 </body>
+
 </html>
 {{end}}

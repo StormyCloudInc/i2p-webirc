@@ -133,10 +133,11 @@ func main() {
 	handler := web.NewHandler(config, sessions, templates, historyBot)
 
 	// Setup routes
-	http.HandleFunc("/", handler.IndexHandler)
-	http.HandleFunc("/join", handler.JoinHandler)
-	http.HandleFunc("/connecting", handler.ConnectingHandler)
-	http.HandleFunc("/chan/", func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", handler.IndexHandler)
+	mux.HandleFunc("/join", handler.JoinHandler)
+	mux.HandleFunc("/connecting", handler.ConnectingHandler)
+	mux.HandleFunc("/chan/", func(w http.ResponseWriter, r *http.Request) {
 		// Check if this is a messages iframe request
 		if strings.HasSuffix(r.URL.Path, "/messages") {
 			handler.MessagesHandler(w, r)
@@ -144,18 +145,23 @@ func main() {
 			handler.ChannelHandler(w, r)
 		}
 	})
-	http.HandleFunc("/send", handler.SendHandler)
-	http.HandleFunc("/settings", handler.SettingsHandler)
-	http.HandleFunc("/status", handler.StatusHandler)
-	http.HandleFunc("/debug/history", handler.DebugHistoryHandler)
+	mux.HandleFunc("/send", handler.SendHandler)
+	mux.HandleFunc("/settings", handler.SettingsHandler)
+	mux.HandleFunc("/status", handler.StatusHandler)
+	mux.HandleFunc("/debug/history", handler.DebugHistoryHandler)
 
 	// Serve static files
-	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
+
+	// Wrap with middleware
+	var rootHandler http.Handler = mux
+	rootHandler = handler.CSRFMiddleware(rootHandler)
+	rootHandler = handler.SecurityHeadersMiddleware(rootHandler)
 
 	// Start server
 	log.Printf("Server starting on %s", *listenAddr)
 	log.Printf("Open http://localhost%s in your browser", *listenAddr)
-	if err := http.ListenAndServe(*listenAddr, nil); err != nil {
+	if err := http.ListenAndServe(*listenAddr, rootHandler); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
 }
