@@ -1,5 +1,5 @@
 # Binaries
-webirc
+
 cmd/webirc/webirc
 *.exe
 *.dll
