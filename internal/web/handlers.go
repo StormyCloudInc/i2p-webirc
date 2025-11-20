@@ -267,6 +267,16 @@ func (h *Handler) ChannelHandler(w http.ResponseWriter, r *http.Request) {
 		ch = session.GetOrCreateChannel(channel)
 	}
 
+	// Auto-join channel if not already joined (only for # channels)
+	if strings.HasPrefix(channel, "#") && session.GetRegistered() {
+		users := ch.GetUsers()
+		// If no users yet, we probably haven't joined - send JOIN command
+		if len(users) == 0 {
+			log.Printf("Session %s auto-joining %s", sessionID, channel)
+			session.SendMessage(fmt.Sprintf("JOIN %s", channel))
+		}
+	}
+
 	// Get messages (history loading happens in MessagesHandler iframe)
 	messages := ch.GetMessages()
 	users := ch.GetUsers()

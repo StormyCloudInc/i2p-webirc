@@ -49,8 +49,19 @@ body {
 .subtitle {
     text-align: center;
     color: #00cc00;
-    margin-bottom: 30px;
+    margin-bottom: 10px;
     font-size: 0.9em;
+}
+
+.security-notice {
+    text-align: center;
+    color: #34c759;
+    font-size: 0.85em;
+    margin-bottom: 30px;
+    padding: 8px 12px;
+    background: rgba(52, 199, 89, 0.1);
+    border-radius: 6px;
+    border: 1px solid rgba(52, 199, 89, 0.3);
 }
 
 /* Forms */
@@ -306,6 +317,20 @@ body {
     margin-bottom: 20px;
 }
 
+.popular-channels {
+    margin-bottom: 20px;
+    padding-top: 10px;
+}
+
+.popular-channels .channel-item a {
+    font-size: 0.9em;
+    opacity: 0.85;
+}
+
+.popular-channels .channel-item a:hover {
+    opacity: 1;
+}
+
 .channel-item {
     margin-bottom: 2px;
     border-radius: 3px;
@@ -385,7 +410,8 @@ body {
 .user-list-compact {
     list-style: none;
     margin-top: 10px;
-    max-height: 200px;
+    max-height: calc(100vh - 400px);
+    min-height: 300px;
     overflow-y: auto;
 }
 
@@ -709,6 +735,12 @@ body.theme-light .welcome-box h1 {
 
 body.theme-light .subtitle {
     color: #0052a3;
+}
+
+body.theme-light .security-notice {
+    color: #34c759;
+    background: rgba(52, 199, 89, 0.08);
+    border-color: rgba(52, 199, 89, 0.2);
 }
 
 body.theme-light .form-group label {
