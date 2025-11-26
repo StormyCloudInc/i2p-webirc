@@ -18,6 +18,15 @@ const (
 	ReconnectMaxDelay   = 2 * time.Minute
 )
 
+// shortID returns a truncated session ID for logging (first 8 chars)
+// This prevents full session IDs from appearing in logs which could aid session hijacking
+func shortID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
 // ChatMessage represents a single chat message or event
 type ChatMessage struct {
 	Time   time.Time
@@ -335,7 +344,7 @@ func (s *IRCSession) SendMessage(msg string) {
 	case s.outgoing <- msg:
 	case <-s.done:
 	default:
-		log.Printf("Session %s: outgoing queue full, dropping message", s.ID)
+		log.Printf("Session %s: outgoing queue full, dropping message", shortID(s.ID))
 	}
 }
 
@@ -359,7 +368,7 @@ func (s *IRCSession) writeLoop() {
 		select {
 		case msg := <-s.outgoing:
 			if err := s.sendRaw(msg); err != nil {
-				log.Printf("Session %s: write error: %v", s.ID, err)
+				log.Printf("Session %s: write error: %v", shortID(s.ID), err)
 				return
 			}
 		case <-s.done:
@@ -376,9 +385,9 @@ func (s *IRCSession) readLoop() {
 		if !scanner.Scan() {
 			// Connection lost
 			if err := scanner.Err(); err != nil {
-				log.Printf("Session %s: read error: %v", s.ID, err)
+				log.Printf("Session %s: read error: %v", shortID(s.ID), err)
 			} else {
-				log.Printf("Session %s: connection closed", s.ID)
+				log.Printf("Session %s: connection closed", shortID(s.ID))
 			}
 
 			// Attempt reconnection
@@ -407,7 +416,7 @@ func (s *IRCSession) reconnect() {
 	delay := ReconnectBaseDelay
 
 	for retry := 0; retry < ReconnectMaxRetries; retry++ {
-		log.Printf("Session %s: reconnecting (attempt %d/%d)...", s.ID, retry+1, ReconnectMaxRetries)
+		log.Printf("Session %s: reconnecting (attempt %d/%d)...", shortID(s.ID), retry+1, ReconnectMaxRetries)
 
 		// Wait before retry
 		time.Sleep(delay)
@@ -415,7 +424,7 @@ func (s *IRCSession) reconnect() {
 		// Try to dial
 		conn, err := s.dialer.Dial()
 		if err != nil {
-			log.Printf("Session %s: reconnect failed: %v", s.ID, err)
+			log.Printf("Session %s: reconnect failed: %v", shortID(s.ID), err)
 			delay *= 2
 			if delay > ReconnectMaxDelay {
 				delay = ReconnectMaxDelay
@@ -452,7 +461,7 @@ func (s *IRCSession) reconnect() {
 			})
 		}
 
-		log.Printf("Session %s: reconnected successfully", s.ID)
+		log.Printf("Session %s: reconnected successfully", shortID(s.ID))
 
 		// Restart read loop
 		go s.readLoop()
@@ -460,7 +469,7 @@ func (s *IRCSession) reconnect() {
 	}
 
 	// Failed to reconnect
-	log.Printf("Session %s: failed to reconnect after %d attempts", s.ID, ReconnectMaxRetries)
+	log.Printf("Session %s: failed to reconnect after %d attempts", shortID(s.ID), ReconnectMaxRetries)
 	s.setStatus("failed")
 }
 

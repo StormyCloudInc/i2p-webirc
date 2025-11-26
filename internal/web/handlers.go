@@ -4,11 +4,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"html"
 	"html/template"
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -22,6 +22,17 @@ const (
 	SessionIDLength   = 32
 	PrefHideJoinPart  = "hide_joinpart"
 	PrefTheme         = "theme"
+	MaxNickLength     = 30
+	MaxChannelLength  = 50
+	MaxMessageLength  = 450 // IRC limit is 512 including headers, leave room
+)
+
+// Validation patterns for IRC names
+var (
+	// Nicknames: letters, numbers, and common IRC chars, no spaces or control chars
+	validNickRegex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_\-\[\]\\^{}|` + "`" + `]{0,29}$`)
+	// Channels: must start with #, then letters/numbers/some punctuation
+	validChannelRegex = regexp.MustCompile(`^#[a-zA-Z0-9_\-\.]{1,49}$`)
 )
 
 // Config holds configuration for the web handlers
@@ -29,6 +40,7 @@ type Config struct {
 	SAMAddress string
 	IRCDest    string
 	MaxUsers   int
+	DebugMode  bool // Enable debug endpoints (/status, /debug/*)
 }
 
 // Handler holds the HTTP handler state
@@ -52,8 +64,59 @@ func NewHandler(config Config, sessions *irc.SessionStore, templates *template.T
 // generateSessionID generates a random session ID
 func generateSessionID() string {
 	bytes := make([]byte, SessionIDLength)
-	rand.Read(bytes)
+	if _, err := rand.Read(bytes); err != nil {
+		// Cryptographic failure is unrecoverable - fail hard rather than use weak randomness
+		panic(fmt.Sprintf("crypto/rand.Read failed: %v", err))
+	}
 	return hex.EncodeToString(bytes)
+}
+
+// isValidNick checks if a nickname is valid for IRC
+func isValidNick(nick string) bool {
+	if nick == "" || len(nick) > MaxNickLength {
+		return false
+	}
+	return validNickRegex.MatchString(nick)
+}
+
+// isValidChannel checks if a channel name is valid for IRC
+func isValidChannel(channel string) bool {
+	if channel == "" || len(channel) > MaxChannelLength {
+		return false
+	}
+	return validChannelRegex.MatchString(channel)
+}
+
+// sanitizeNick cleans a nickname, returning a valid one or empty string
+func sanitizeNick(nick string) string {
+	nick = strings.TrimSpace(nick)
+	if isValidNick(nick) {
+		return nick
+	}
+	return ""
+}
+
+// sanitizeChannel cleans a channel name, returning a valid one or empty string
+func sanitizeChannel(channel string) string {
+	channel = strings.TrimSpace(channel)
+	if !strings.HasPrefix(channel, "#") {
+		channel = "#" + channel
+	}
+	if isValidChannel(channel) {
+		return channel
+	}
+	return ""
+}
+
+// generateDefaultNick creates a random default nickname
+func generateDefaultNick() string {
+	bytes := make([]byte, 4)
+	if _, err := rand.Read(bytes); err != nil {
+		// Fallback to time-based if crypto fails (shouldn't happen)
+		return fmt.Sprintf("user%d", time.Now().UnixNano()%100000)
+	}
+	// Use hex encoding for alphanumeric result
+	return "user" + hex.EncodeToString(bytes)
 }
 
 // getMessagesWithHistory gets channel messages, prepending bot history if available and channel is new
@@ -138,7 +201,7 @@ func (h *Handler) IndexHandler(w http.ResponseWriter, r *http.Request) {
 
 	theme := h.getTheme(w, r)
 	data := map[string]interface{}{
-		"DefaultNick":    fmt.Sprintf("webuser%d", time.Now().Unix()%10000),
+		"DefaultNick":    generateDefaultNick(),
 		"DefaultChannel": "#i2p-chat",
 		"LastChannel":    "",
 		"Theme":          theme,
@@ -173,13 +236,14 @@ func (h *Handler) JoinHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nick := strings.TrimSpace(r.FormValue("nick"))
-	channel := strings.TrimSpace(r.FormValue("channel"))
+	nick := sanitizeNick(r.FormValue("nick"))
+	channel := sanitizeChannel(r.FormValue("channel"))
 
+	// Use defaults if validation failed
 	if nick == "" {
-		nick = fmt.Sprintf("webuser%d", time.Now().Unix()%10000)
+		nick = generateDefaultNick()
 	}
-	if channel == "" || !strings.HasPrefix(channel, "#") {
+	if channel == "" {
 		channel = "#i2p-chat"
 	}
 
@@ -219,7 +283,7 @@ func (h *Handler) JoinHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		log.Printf("Started IRC session %s, redirecting to connecting page", sessionID)
+		log.Printf("Started IRC session %s, redirecting to connecting page", sessionID[:8])
 	}
 
 	session.UpdateLastHTTP()
@@ -272,7 +336,7 @@ func (h *Handler) ChannelHandler(w http.ResponseWriter, r *http.Request) {
 		users := ch.GetUsers()
 		// If no users yet, we probably haven't joined - send JOIN command
 		if len(users) == 0 {
-			log.Printf("Session %s auto-joining %s", sessionID, channel)
+			log.Printf("Session %s auto-joining %s", sessionID[:8], channel)
 			session.SendMessage(fmt.Sprintf("JOIN %s", channel))
 		}
 	}
@@ -397,14 +461,14 @@ func (h *Handler) ConnectingHandler(w http.ResponseWriter, r *http.Request) {
 			messages := ch.GetMessages()
 			// If we have users or messages, the channel is ready
 			if len(users) > 0 || len(messages) > 0 {
-				log.Printf("Session %s ready, channel %s has %d users, redirecting", sessionID, channel, len(users))
+				log.Printf("Session %s ready, channel %s has %d users, redirecting", sessionID[:8], channel, len(users))
 				http.Redirect(w, r, "/chan/"+url.PathEscape(channel), http.StatusSeeOther)
 				return
 			}
 		}
 
 		// Registered but haven't joined yet - send JOIN command
-		log.Printf("Session %s registered, sending JOIN for %s", sessionID, channel)
+		log.Printf("Session %s registered, sending JOIN for %s", sessionID[:8], channel)
 		session.SendMessage(fmt.Sprintf("JOIN %s", channel))
 		// Continue showing connecting page, will redirect on next refresh when users arrive
 	}
@@ -426,8 +490,13 @@ func (h *Handler) ConnectingHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// StatusHandler handles GET /status - debugging endpoint
+// StatusHandler handles GET /status - debugging endpoint (requires DebugMode)
 func (h *Handler) StatusHandler(w http.ResponseWriter, r *http.Request) {
+	if !h.config.DebugMode {
+		http.NotFound(w, r)
+		return
+	}
+
 	sessionID := h.getOrCreateSessionID(w, r)
 	session := h.sessions.Get(sessionID)
 
@@ -436,7 +505,8 @@ func (h *Handler) StatusHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "=================\n\n")
 	fmt.Fprintf(w, "SAM Address: %s\n", h.config.SAMAddress)
 	fmt.Fprintf(w, "IRC Destination: %s\n", h.config.IRCDest)
-	fmt.Fprintf(w, "Session ID: %s\n", sessionID)
+	// Don't expose full session ID in debug output - show truncated version
+	fmt.Fprintf(w, "Session ID: %s...\n", sessionID[:8])
 
 	if session != nil {
 		fmt.Fprintf(w, "Session Status: %s\n", session.GetStatus())
@@ -447,8 +517,13 @@ func (h *Handler) StatusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// DebugHistoryHandler handles GET /debug/history?channel=NAME - shows what bot has recorded
+// DebugHistoryHandler handles GET /debug/history?channel=NAME - shows what bot has recorded (requires DebugMode)
 func (h *Handler) DebugHistoryHandler(w http.ResponseWriter, r *http.Request) {
+	if !h.config.DebugMode {
+		http.NotFound(w, r)
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
 	if h.bot == nil {
@@ -531,6 +606,11 @@ func (h *Handler) SendHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Enforce message length limit to prevent IRC protocol issues
+	if len(message) > MaxMessageLength {
+		message = message[:MaxMessageLength]
+	}
+
 	// Handle commands
 	if strings.HasPrefix(message, "/") {
 		parts := strings.Fields(message)
@@ -539,23 +619,38 @@ func (h *Handler) SendHandler(w http.ResponseWriter, r *http.Request) {
 		switch command {
 		case "/nick":
 			if len(parts) >= 2 {
-				newNick := parts[1]
-				session.SendMessage(fmt.Sprintf("NICK %s", newNick))
-				session.SetNick(newNick)
+				newNick := sanitizeNick(parts[1])
+				if newNick == "" {
+					ch := session.GetOrCreateChannel(channel)
+					ch.AddMessage(irc.ChatMessage{
+						Time:   time.Now(),
+						Prefix: "system",
+						Text:   "Invalid nickname. Use letters, numbers, and _ - [ ] \\ ^ { } |",
+						Kind:   "system",
+					})
+				} else {
+					session.SendMessage(fmt.Sprintf("NICK %s", newNick))
+					session.SetNick(newNick)
+				}
 			}
 
 		case "/join":
 			if len(parts) >= 2 {
-				newChannel := parts[1]
-				if !strings.HasPrefix(newChannel, "#") {
-					newChannel = "#" + newChannel
+				newChannel := sanitizeChannel(parts[1])
+				if newChannel == "" {
+					ch := session.GetOrCreateChannel(channel)
+					ch.AddMessage(irc.ChatMessage{
+						Time:   time.Now(),
+						Prefix: "system",
+						Text:   "Invalid channel name. Use #channel with letters, numbers, _ - .",
+						Kind:   "system",
+					})
+				} else {
+					session.SendMessage(fmt.Sprintf("JOIN %s", newChannel))
+					// Redirect to new channel - use target="_parent" in the redirect page
+					http.Redirect(w, r, "/chan/"+url.PathEscape(newChannel), http.StatusSeeOther)
+					return
 				}
-				session.SendMessage(fmt.Sprintf("JOIN %s", newChannel))
-				// Render HTML to navigate parent frame
-				w.Header().Set("Content-Type", "text/html")
-				fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=/chan/%s"><script>if(window.parent){window.parent.location.href='/chan/%s';}</script></head><body>Joining %s...</body></html>`,
-					url.PathEscape(newChannel), url.PathEscape(newChannel), html.EscapeString(newChannel))
-				return
 			}
 
 		case "/part", "/leave":
@@ -584,10 +679,8 @@ func (h *Handler) SendHandler(w http.ResponseWriter, r *http.Request) {
 					Kind:   "privmsg",
 				})
 
-				// Render HTML to navigate parent frame to DM view
-				w.Header().Set("Content-Type", "text/html")
-				fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=/chan/%s"><script>if(window.parent){window.parent.location.href='/chan/%s';}</script></head><body>Opening DM with %s...</body></html>`,
-					url.PathEscape(targetNick), url.PathEscape(targetNick), html.EscapeString(targetNick))
+				// Redirect to DM view
+				http.Redirect(w, r, "/chan/"+url.PathEscape(targetNick), http.StatusSeeOther)
 				return
 			}
 
@@ -608,8 +701,15 @@ func (h *Handler) SendHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 		default:
-			// Unknown command - send as-is to IRC
-			session.SendMessage(strings.TrimPrefix(message, "/"))
+			// Unknown command - do NOT send to IRC (prevents protocol injection)
+			// Show error message to user
+			ch := session.GetOrCreateChannel(channel)
+			ch.AddMessage(irc.ChatMessage{
+				Time:   time.Now(),
+				Prefix: "system",
+				Text:   fmt.Sprintf("Unknown command: %s. Available: /nick, /join, /part, /msg, /me, /list", command),
+				Kind:   "system",
+			})
 		}
 	} else {
 		// Regular message

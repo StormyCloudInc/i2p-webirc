@@ -73,12 +73,18 @@ const (
 var (
 	listenAddr  = flag.String("listen", ":8080", "HTTP server listen address")
 	samAddr     = flag.String("sam-addr", "127.0.0.1:7656", "SAM bridge address")
-	ircDest     = flag.String("irc-dest", "irc.example.i2p", "I2P IRC server destination")
+	ircDest     = flag.String("irc-dest", "", "I2P IRC server destination (required)")
 	botChannels = flag.String("bot-channels", "#i2p-chat,#i2p", "Comma-separated list of channels for history bot to monitor")
+	debugMode   = flag.Bool("debug", false, "Enable debug endpoints (/status, /debug/*)")
 )
 
 func main() {
 	flag.Parse()
+
+	// Validate required flags
+	if *ircDest == "" {
+		log.Fatal("Error: -irc-dest flag is required. Please specify the I2P IRC server destination.")
+	}
 
 	log.Printf("I2P WebIRC starting...")
 	log.Printf("SAM address: %s", *samAddr)
@@ -129,6 +135,7 @@ func main() {
 		SAMAddress: *samAddr,
 		IRCDest:    *ircDest,
 		MaxUsers:   MaxConcurrentUsers,
+		DebugMode:  *debugMode,
 	}
 	handler := web.NewHandler(config, sessions, templates, historyBot)
 
@@ -153,8 +160,12 @@ func main() {
 	// Serve static files
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
 
+	// Create rate limiter: 60 requests per minute per session
+	rateLimiter := web.NewRateLimiter(60, time.Minute)
+
 	// Wrap with middleware
 	var rootHandler http.Handler = mux
+	rootHandler = handler.RateLimitMiddleware(rateLimiter)(rootHandler)
 	rootHandler = handler.CSRFMiddleware(rootHandler)
 	rootHandler = handler.SecurityHeadersMiddleware(rootHandler)
 
@@ -198,7 +209,7 @@ func sessionCleanup(sessions *irc.SessionStore) {
 			lastHTTP := session.GetLastHTTP()
 			if now.Sub(lastHTTP) > SessionInactivityTimeout {
 				log.Printf("Cleaning up inactive session: %s (last activity: %v ago)",
-					session.ID, now.Sub(lastHTTP))
+					session.ID[:8], now.Sub(lastHTTP))
 
 				// Close the session
 				session.Close()

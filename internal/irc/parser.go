@@ -309,20 +309,20 @@ func (s *IRCSession) handleIRCLine(line string) {
 	case "001": // RPL_WELCOME - IRC registration complete
 		// Mark as registered when we receive the first welcome message
 		s.setRegistered(true)
-		log.Printf("Session %s: IRC registration complete", s.ID)
+		log.Printf("Session %s: IRC registration complete", shortID(s.ID))
 
 	case "002", "003", "004", "005": // Other welcome messages
 		// Server welcome - could log or display
-		log.Printf("Session %s: %s", s.ID, msg.Raw)
+		log.Printf("Session %s: %s", shortID(s.ID), msg.Raw)
 
 	case "372", "375", "376": // MOTD
 		// Message of the day - could display in a system channel
-		log.Printf("Session %s: %s", s.ID, msg.Raw)
+		log.Printf("Session %s: %s", shortID(s.ID), msg.Raw)
 
 	default:
 		// Log unknown commands for debugging
 		if msg.Command != "" {
-			log.Printf("Session %s: Unhandled IRC command %s: %s", s.ID, msg.Command, msg.Raw)
+			log.Printf("Session %s: Unhandled IRC command %s: %s", shortID(s.ID), msg.Command, msg.Raw)
 		}
 	}
 }
