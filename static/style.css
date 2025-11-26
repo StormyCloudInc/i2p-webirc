@@ -431,6 +431,38 @@ body {
     font-style: italic;
 }
 
+.settings-link {
+    margin-top: 15px;
+    padding-top: 10px;
+    border-top: 1px solid #004400;
+}
+
+.settings-link a {
+    display: block;
+    padding: 8px 10px;
+    color: #00cc00;
+    text-decoration: none;
+    border-radius: 3px;
+    transition: all 0.2s;
+}
+
+.settings-link a:hover {
+    background: #1a1a1a;
+    color: #00ff00;
+}
+
+body.theme-light .settings-link {
+    border-top-color: #ddd;
+}
+
+body.theme-light .settings-link a {
+    color: #0066cc;
+}
+
+body.theme-light .settings-link a:hover {
+    background: #f0f0f0;
+}
+
 /* Chat area */
 .chat-area {
     flex: 1;
