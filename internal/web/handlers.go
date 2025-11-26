@@ -346,8 +346,8 @@ func (h *Handler) ChannelHandler(w http.ResponseWriter, r *http.Request) {
 	users := ch.GetUsers()
 	sort.Strings(users)
 
-	// Get user preferences
-	hideJoinPart := h.getPref(r, PrefHideJoinPart, "false") == "true"
+	// Get user preferences (hide join/part by default)
+	hideJoinPart := h.getPref(r, PrefHideJoinPart, "true") == "true"
 	theme := h.getTheme(w, r)
 
 	// Get all channels for sidebar
@@ -406,8 +406,8 @@ func (h *Handler) MessagesHandler(w http.ResponseWriter, r *http.Request) {
 	users := ch.GetUsers()
 	sort.Strings(users)
 
-	// Get user preferences
-	hideJoinPart := h.getPref(r, PrefHideJoinPart, "false") == "true"
+	// Get user preferences (hide join/part by default)
+	hideJoinPart := h.getPref(r, PrefHideJoinPart, "true") == "true"
 	theme := h.getTheme(w, r)
 
 	// Get all channels for sidebar
