@@ -128,6 +128,7 @@ type IRCSession struct {
 	nick     string
 	username string
 	realname string
+	serverID string // which server this session is connected to ("postman", "simp")
 
 	mu           sync.RWMutex
 	channels     map[string]*ChannelState
@@ -137,8 +138,9 @@ type IRCSession struct {
 	lastHTTP     time.Time
 	currentChan  string
 
-	outgoing chan string
-	done     chan struct{}
+	outgoing  chan string
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 // NewIRCSession creates a new IRC session
@@ -270,6 +272,20 @@ func (s *IRCSession) GetCurrentChannel() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.currentChan
+}
+
+// SetServerID sets the server ID for this session
+func (s *IRCSession) SetServerID(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.serverID = id
+}
+
+// GetServerID gets the server ID for this session
+func (s *IRCSession) GetServerID() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.serverID
 }
 
 // MarkChannelSeen marks a channel as seen at the current time
@@ -473,21 +489,30 @@ func (s *IRCSession) reconnect() {
 	s.setStatus("failed")
 }
 
-// Close shuts down the session
+// Close shuts down the session (non-blocking, safe to call multiple times)
 func (s *IRCSession) Close() {
-	close(s.done)
+	s.closeOnce.Do(func() {
+		close(s.done)
 
-	s.mu.Lock()
-	if s.conn != nil {
-		s.sendRaw("QUIT :Leaving")
-		s.conn.Close()
-		s.conn = nil
-	}
-	s.mu.Unlock()
+		// Run cleanup in goroutine to avoid blocking
+		go func() {
+			s.mu.Lock()
+			conn := s.conn
+			s.conn = nil
+			s.mu.Unlock()
 
-	if s.dialer != nil {
-		s.dialer.Close()
-	}
+			if conn != nil {
+				// Set a short deadline so QUIT doesn't block forever
+				conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+				conn.Write([]byte("QUIT :Leaving\r\n"))
+				conn.Close()
+			}
+
+			if s.dialer != nil {
+				s.dialer.Close()
+			}
+		}()
+	})
 }
 
 // SessionStore manages all active IRC sessions

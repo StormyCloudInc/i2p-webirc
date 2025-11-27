@@ -78,6 +78,19 @@ func splitToken(token string) []string {
 	return []string{token}
 }
 
+// isSecureRequest checks if the request is over HTTPS
+func isSecureRequest(r *http.Request) bool {
+	// Check TLS connection directly
+	if r.TLS != nil {
+		return true
+	}
+	// Check X-Forwarded-Proto header (for reverse proxy setups)
+	if r.Header.Get("X-Forwarded-Proto") == "https" {
+		return true
+	}
+	return false
+}
+
 // CSRFMiddleware adds CSRF protection with session-bound tokens
 func (h *Handler) CSRFMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -105,7 +118,7 @@ func (h *Handler) CSRFMiddleware(next http.Handler) http.Handler {
 				Value:    token,
 				Path:     "/",
 				HttpOnly: false, // Must be readable by forms
-				Secure:   true,
+				Secure:   isSecureRequest(r),
 				SameSite: http.SameSiteStrictMode,
 			})
 		} else {

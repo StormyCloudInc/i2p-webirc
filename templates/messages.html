@@ -44,46 +44,13 @@
 
             <h3 style="margin-top: 20px;">Popular Channels</h3>
             <ul class="channel-list popular-channels">
+                {{range .PopularChannels}}
                 <li class="channel-item">
-                    <a href="/chan/%23i2p-chat" target="_parent">
-                        <span class="channel-name-text">#i2p-chat</span>
+                    <a href="/chan/{{urlEscape .}}" target="_parent">
+                        <span class="channel-name-text">{{.}}</span>
                     </a>
                 </li>
-                <li class="channel-item">
-                    <a href="/chan/%23ai-chat" target="_parent">
-                        <span class="channel-name-text">#ai-chat</span>
-                    </a>
-                </li>
-                <li class="channel-item">
-                    <a href="/chan/%23i2pd" target="_parent">
-                        <span class="channel-name-text">#i2pd</span>
-                    </a>
-                </li>
-                <li class="channel-item">
-                    <a href="/chan/%23freedom" target="_parent">
-                        <span class="channel-name-text">#freedom</span>
-                    </a>
-                </li>
-                <li class="channel-item">
-                    <a href="/chan/%23torrents" target="_parent">
-                        <span class="channel-name-text">#torrents</span>
-                    </a>
-                </li>
-                <li class="channel-item">
-                    <a href="/chan/%23i2p" target="_parent">
-                        <span class="channel-name-text">#i2p</span>
-                    </a>
-                </li>
-                <li class="channel-item">
-                    <a href="/chan/%23saltr" target="_parent">
-                        <span class="channel-name-text">#saltr</span>
-                    </a>
-                </li>
-                <li class="channel-item">
-                    <a href="/chan/%23i2p-news" target="_parent">
-                        <span class="channel-name-text">#i2p-news</span>
-                    </a>
-                </li>
+                {{end}}
             </ul>
 
             <div class="sidebar-footer">
@@ -117,7 +84,7 @@
                 <div class="message msg-{{.Kind}}">
                     <span class="timestamp">[{{.Time.Format "15:04"}}]</span>
                     {{if eq .Kind "privmsg"}}
-                    <span class="nick">&lt;{{.Prefix}}&gt;</span>
+                    <span class="nick">{{.Prefix}}</span>
                     <span class="text">{{.Text}}</span>
                     {{else if eq .Kind "action"}}
                     <span class="action">* {{.Prefix}} {{.Text}}</span>
@@ -137,8 +104,11 @@
                 </div>
                 {{end}}
                 {{else}}
-                <div class="message msg-system">
-                    <span class="system">No messages yet. Say hello!</span>
+                <div class="channel-welcome">
+                    <div class="welcome-icon">#</div>
+                    <h2>Welcome to {{.Channel}}!</h2>
+                    <p>This is the start of the <span class="highlight">{{.Channel}}</span> channel.</p>
+                    <p class="sub-text">Send a message to start the conversation.</p>
                 </div>
                 {{end}}
                 <div id="bottom"></div>

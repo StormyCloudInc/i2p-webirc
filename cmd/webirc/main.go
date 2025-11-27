@@ -71,11 +71,12 @@ const (
 )
 
 var (
-	listenAddr  = flag.String("listen", ":8080", "HTTP server listen address")
-	samAddr     = flag.String("sam-addr", "127.0.0.1:7656", "SAM bridge address")
-	ircDest     = flag.String("irc-dest", "", "I2P IRC server destination (required)")
-	botChannels = flag.String("bot-channels", "#i2p-chat,#i2p", "Comma-separated list of channels for history bot to monitor")
-	debugMode   = flag.Bool("debug", false, "Enable debug endpoints (/status, /debug/*)")
+	listenAddr      = flag.String("listen", ":8080", "HTTP server listen address")
+	samAddr         = flag.String("sam-addr", "127.0.0.1:7656", "SAM bridge address")
+	ircDest         = flag.String("irc-dest", "", "I2P IRC server destination (required, for backwards compat)")
+	botChannels     = flag.String("bot-channels", "#i2p-chat,#i2p,#i2p-dev", "Comma-separated list of channels for Postman history bot")
+	simpBotChannels = flag.String("simp-bot-channels", "#simp,#ru,#en,#guessthesong,#gatheryourparty", "Comma-separated list of channels for Simp IRC history bot")
+	debugMode       = flag.Bool("debug", false, "Enable debug endpoints (/status, /debug/*)")
 )
 
 func main() {
@@ -103,31 +104,53 @@ func main() {
 		log.Fatalf("Failed to load templates: %v", err)
 	}
 
-	// Parse bot channels
-	var channels []string
+	// Create history bots for each IRC server
+	historyBots := make(map[string]*bot.HistoryBot)
+
+	// Parse and start Postman history bot
 	if *botChannels != "" {
+		var channels []string
 		for _, ch := range strings.Split(*botChannels, ",") {
 			ch = strings.TrimSpace(ch)
 			if ch != "" {
 				channels = append(channels, ch)
 			}
 		}
+		if len(channels) > 0 {
+			log.Printf("Starting Postman history bot for channels: %v", channels)
+			postmanBot := bot.NewHistoryBot("historybot-postman", "HistoryBot", *samAddr, "irc.postman.i2p", channels, 50)
+			if err := postmanBot.Start(); err != nil {
+				log.Printf("Warning: Failed to start Postman history bot: %v", err)
+			} else {
+				log.Printf("Postman history bot started successfully")
+				historyBots["postman"] = postmanBot
+			}
+		}
 	}
 
-	// Create and start history bot if channels are configured
-	var historyBot *bot.HistoryBot
-	if len(channels) > 0 {
-		log.Printf("Starting history bot for channels: %v", channels)
-		historyBot = bot.NewHistoryBot("HistoryBot", *samAddr, *ircDest, channels, 50)
-		if err := historyBot.Start(); err != nil {
-			log.Printf("Warning: Failed to start history bot: %v", err)
-			log.Printf("Continuing without message history support")
-			historyBot = nil
-		} else {
-			log.Printf("History bot started successfully")
+	// Parse and start Simp history bot
+	if *simpBotChannels != "" {
+		var channels []string
+		for _, ch := range strings.Split(*simpBotChannels, ",") {
+			ch = strings.TrimSpace(ch)
+			if ch != "" {
+				channels = append(channels, ch)
+			}
 		}
-	} else {
-		log.Printf("No bot channels configured, message history disabled")
+		if len(channels) > 0 {
+			log.Printf("Starting Simp history bot for channels: %v", channels)
+			simpBot := bot.NewHistoryBot("historybot-simp", "HistoryBot", *samAddr, "edg3okvdbjcsbeqrwsakn6jog4mw27i3ri4ychl7kdn3u4xhtf3a.b32.i2p:6667", channels, 50)
+			if err := simpBot.Start(); err != nil {
+				log.Printf("Warning: Failed to start Simp history bot: %v", err)
+			} else {
+				log.Printf("Simp history bot started successfully")
+				historyBots["simp"] = simpBot
+			}
+		}
+	}
+
+	if len(historyBots) == 0 {
+		log.Printf("No history bots configured")
 	}
 
 	// Create handler
@@ -137,7 +160,7 @@ func main() {
 		MaxUsers:   MaxConcurrentUsers,
 		DebugMode:  *debugMode,
 	}
-	handler := web.NewHandler(config, sessions, templates, historyBot)
+	handler := web.NewHandler(config, sessions, templates, historyBots)
 
 	// Setup routes
 	mux := http.NewServeMux()
@@ -154,8 +177,14 @@ func main() {
 	})
 	mux.HandleFunc("/send", handler.SendHandler)
 	mux.HandleFunc("/settings", handler.SettingsHandler)
+	mux.HandleFunc("/health", handler.HealthHandler)
 	mux.HandleFunc("/status", handler.StatusHandler)
 	mux.HandleFunc("/debug/history", handler.DebugHistoryHandler)
+
+	// Metrics endpoints
+	metrics := handler.GetMetrics()
+	mux.HandleFunc("/metrics", metrics.Handler(sessions))
+	mux.HandleFunc("/metrics/prometheus", metrics.PrometheusHandler(sessions))
 
 	// Serve static files
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))

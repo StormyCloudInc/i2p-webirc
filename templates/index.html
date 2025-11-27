@@ -22,8 +22,18 @@
             </div>
 
             <div class="form-group">
+                <label for="server">Server:</label>
+                <select id="server" name="server">
+                    {{range .Servers}}
+                    <option value="{{.ID}}"{{if eq .ID $.DefaultServer}} selected{{end}}>{{.Name}} ({{.DefaultChannel}})</option>
+                    {{end}}
+                </select>
+            </div>
+
+            <div class="form-group">
                 <label for="channel">Channel:</label>
-                <input type="text" id="channel" name="channel" value="{{.DefaultChannel}}" required>
+                <input type="text" id="channel" name="channel" placeholder="Leave empty for server default">
+                <small class="form-hint">Postman: #i2p-chat | Simp: #simp</small>
             </div>
 
             <button type="submit" class="btn btn-primary">Join Chat</button>
@@ -31,11 +41,12 @@
 
         {{if .LastChannel}}
         <div class="last-channel">
-            <p>Last channel: <strong>{{.LastChannel}}</strong></p>
+            <p>Last channel: <strong>{{.LastChannel}}</strong>{{if .LastServer}} on {{.LastServer}}{{end}}</p>
             <form method="POST" action="/join">
                 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                 <input type="hidden" name="nick" value="{{.DefaultNick}}">
                 <input type="hidden" name="channel" value="{{.LastChannel}}">
+                <input type="hidden" name="server" value="{{if .LastServer}}{{.LastServer}}{{else}}postman{{end}}">
                 <button type="submit" class="btn btn-secondary">Rejoin</button>
             </form>
         </div>

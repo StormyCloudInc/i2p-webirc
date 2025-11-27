@@ -3,6 +3,7 @@ package irc
 import (
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 
 	sam3 "github.com/eyedeekay/sam3"
@@ -56,14 +57,36 @@ func (d *SamIRCDialer) Dial() (net.Conn, error) {
 		d.stream = stream
 	}
 
-	// Dial the IRC destination over I2P
-	// Use Lookup to resolve the I2P destination name/address
-	addr, err := d.stream.Lookup(d.IRCDest)
-	if err != nil {
-		return nil, fmt.Errorf("failed to lookup I2P destination %s: %w", d.IRCDest, err)
+	// Parse destination and port (format: "host" or "host:port")
+	dest := d.IRCDest
+	port := ""
+	if idx := strings.LastIndex(dest, ":"); idx != -1 {
+		// Check if this looks like a port (digits after colon)
+		possiblePort := dest[idx+1:]
+		if _, err := fmt.Sscanf(possiblePort, "%d", new(int)); err == nil {
+			port = possiblePort
+			dest = dest[:idx]
+		}
 	}
 
-	conn, err := d.stream.DialI2P(addr)
+	// Use Lookup to resolve the I2P destination name/address
+	addr, err := d.stream.Lookup(dest)
+	if err != nil {
+		return nil, fmt.Errorf("failed to lookup I2P destination %s: %w", dest, err)
+	}
+
+	// Dial with port if specified
+	var conn net.Conn
+	if port != "" {
+		// addr.Base32() returns just the hash without .b32.i2p suffix
+		b32Addr := addr.Base32()
+		if !strings.HasSuffix(b32Addr, ".b32.i2p") {
+			b32Addr = b32Addr + ".b32.i2p"
+		}
+		conn, err = d.stream.Dial("tcp", b32Addr+":"+port)
+	} else {
+		conn, err = d.stream.DialI2P(addr)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial IRC destination %s: %w", d.IRCDest, err)
 	}

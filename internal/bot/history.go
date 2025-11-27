@@ -3,6 +3,8 @@ package bot
 import (
 	"bufio"
 	"container/ring"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net"
@@ -75,17 +77,19 @@ func (ch *ChannelHistory) GetRecent(n int) []Message {
 
 // HistoryBot maintains IRC channel history
 type HistoryBot struct {
-	nick         string
-	samAddr      string
-	ircDest      string
-	channels     []string
-	historySize  int
+	nick        string
+	sessionID   string // unique SAM session ID
+	samAddr     string
+	ircDest     string
+	channels    []string
+	historySize int
 
-	histories    map[string]*ChannelHistory
-	historiesMu  sync.RWMutex
+	histories   map[string]*ChannelHistory
+	historiesMu sync.RWMutex
 
 	conn         net.Conn
 	sam          *sam3.SAM
+	stream       *sam3.StreamSession
 	stopCh       chan struct{}
 	stoppedCh    chan struct{}
 	registered   bool
@@ -93,12 +97,13 @@ type HistoryBot struct {
 }
 
 // NewHistoryBot creates a new history bot
-func NewHistoryBot(nick, samAddr, ircDest string, channels []string, historySize int) *HistoryBot {
+func NewHistoryBot(sessionID, nick, samAddr, ircDest string, channels []string, historySize int) *HistoryBot {
 	if historySize == 0 {
 		historySize = 50 // default to storing last 50 messages
 	}
 
 	return &HistoryBot{
+		sessionID:   sessionID,
 		nick:        nick,
 		samAddr:     samAddr,
 		ircDest:     ircDest,
@@ -108,6 +113,13 @@ func NewHistoryBot(nick, samAddr, ircDest string, channels []string, historySize
 		stopCh:      make(chan struct{}),
 		stoppedCh:   make(chan struct{}),
 	}
+}
+
+// randomSuffix generates a short random suffix for session names
+func randomSuffix() string {
+	b := make([]byte, 4)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 // Start starts the history bot
@@ -124,27 +136,51 @@ func (hb *HistoryBot) Start() error {
 	}
 	hb.sam = sam
 
-	// Create streaming session
+	// Create streaming session with random suffix to avoid conflicts
+	sessionName := hb.sessionID + "-" + randomSuffix()
 	keys, err := sam.NewKeys()
 	if err != nil {
 		sam.Close()
 		return fmt.Errorf("failed to generate keys: %w", err)
 	}
 
-	stream, err := sam.NewStreamSession("historybot", keys, sam3.Options_Small)
+	stream, err := sam.NewStreamSession(sessionName, keys, sam3.Options_Small)
 	if err != nil {
 		sam.Close()
 		return fmt.Errorf("failed to create stream session: %w", err)
 	}
+	hb.stream = stream
 
-	// Lookup and connect to IRC server
-	addr, err := stream.Lookup(hb.ircDest)
-	if err != nil {
-		sam.Close()
-		return fmt.Errorf("failed to lookup IRC destination %s: %w", hb.ircDest, err)
+	// Parse destination and port (format: "host" or "host:port")
+	dest := hb.ircDest
+	port := ""
+	if idx := strings.LastIndex(dest, ":"); idx != -1 {
+		// Check if this looks like a port (digits after colon)
+		possiblePort := dest[idx+1:]
+		if _, err := fmt.Sscanf(possiblePort, "%d", new(int)); err == nil {
+			port = possiblePort
+			dest = dest[:idx]
+		}
 	}
 
-	conn, err := stream.DialI2P(addr)
+	// Lookup and connect to IRC server
+	addr, err := stream.Lookup(dest)
+	if err != nil {
+		sam.Close()
+		return fmt.Errorf("failed to lookup IRC destination %s: %w", dest, err)
+	}
+
+	var conn net.Conn
+	if port != "" {
+		// Dial with port
+		b32Addr := addr.Base32()
+		if !strings.HasSuffix(b32Addr, ".b32.i2p") {
+			b32Addr = b32Addr + ".b32.i2p"
+		}
+		conn, err = stream.Dial("tcp", b32Addr+":"+port)
+	} else {
+		conn, err = stream.DialI2P(addr)
+	}
 	if err != nil {
 		sam.Close()
 		return fmt.Errorf("failed to connect to IRC: %w", err)
@@ -234,6 +270,17 @@ func (hb *HistoryBot) reconnect() bool {
 
 	delay := baseDelay
 
+	// Parse destination and port
+	dest := hb.ircDest
+	port := ""
+	if idx := strings.LastIndex(dest, ":"); idx != -1 {
+		possiblePort := dest[idx+1:]
+		if _, err := fmt.Sscanf(possiblePort, "%d", new(int)); err == nil {
+			port = possiblePort
+			dest = dest[:idx]
+		}
+	}
+
 	for retry := 0; retry < maxRetries; retry++ {
 		log.Printf("[HistoryBot] Reconnecting (attempt %d/%d)...", retry+1, maxRetries)
 
@@ -245,7 +292,7 @@ func (hb *HistoryBot) reconnect() bool {
 		}
 
 		// Try to connect
-		addr, err := hb.sam.Lookup(hb.ircDest)
+		addr, err := hb.sam.Lookup(dest)
 		if err != nil {
 			log.Printf("[HistoryBot] Lookup failed: %v", err)
 			delay *= 2
@@ -266,7 +313,8 @@ func (hb *HistoryBot) reconnect() bool {
 			continue
 		}
 
-		stream, err := hb.sam.NewStreamSession("historybot-reconnect", keys, sam3.Options_Small)
+		sessionName := hb.sessionID + "-reconnect-" + randomSuffix()
+		stream, err := hb.sam.NewStreamSession(sessionName, keys, sam3.Options_Small)
 		if err != nil {
 			log.Printf("[HistoryBot] Failed to create stream session: %v", err)
 			delay *= 2
@@ -276,7 +324,16 @@ func (hb *HistoryBot) reconnect() bool {
 			continue
 		}
 
-		conn, err := stream.DialI2P(addr)
+		var conn net.Conn
+		if port != "" {
+			b32Addr := addr.Base32()
+			if !strings.HasSuffix(b32Addr, ".b32.i2p") {
+				b32Addr = b32Addr + ".b32.i2p"
+			}
+			conn, err = stream.Dial("tcp", b32Addr+":"+port)
+		} else {
+			conn, err = stream.DialI2P(addr)
+		}
 		if err != nil {
 			log.Printf("[HistoryBot] Dial failed: %v", err)
 			delay *= 2
@@ -288,6 +345,7 @@ func (hb *HistoryBot) reconnect() bool {
 
 		// Success!
 		hb.conn = conn
+		hb.stream = stream
 		log.Printf("[HistoryBot] Reconnected successfully")
 
 		// Re-register with IRC
@@ -396,6 +454,15 @@ func (hb *HistoryBot) addMessage(channel string, msg Message) {
 		history.Add(msg)
 		log.Printf("[HistoryBot] [%s] <%s> %s", channel, msg.Nick, msg.Content)
 	}
+}
+
+// IsHealthy returns true if the bot is connected and registered with IRC
+func (hb *HistoryBot) IsHealthy() bool {
+	hb.registeredMu.Lock()
+	registered := hb.registered
+	hb.registeredMu.Unlock()
+
+	return registered && hb.conn != nil
 }
 
 // GetHistory returns recent messages for a channel

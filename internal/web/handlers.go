@@ -35,6 +35,43 @@ var (
 	validChannelRegex = regexp.MustCompile(`^#[a-zA-Z0-9_\-\.]{1,49}$`)
 )
 
+// IRCServer represents an available IRC server
+type IRCServer struct {
+	ID              string   // "postman", "simp"
+	Name            string   // "Postman IRC", "Simp IRC"
+	Address         string   // "irc.postman.i2p", "irc.simp.i2p"
+	DefaultChannel  string   // Default channel for this server
+	PopularChannels []string // Popular channels to show in sidebar
+}
+
+// AvailableServers is the whitelist of IRC servers users can connect to
+var AvailableServers = []IRCServer{
+	{
+		ID:              "postman",
+		Name:            "Postman IRC",
+		Address:         "irc.postman.i2p",
+		DefaultChannel:  "#i2p-chat",
+		PopularChannels: []string{"#i2p-chat", "#i2p", "#i2pd", "#saltr", "#torrents", "#freedom", "#i2p-news", "#ai-chat"},
+	},
+	{
+		ID:              "simp",
+		Name:            "Simp IRC",
+		Address:         "edg3okvdbjcsbeqrwsakn6jog4mw27i3ri4ychl7kdn3u4xhtf3a.b32.i2p:6667",
+		DefaultChannel:  "#simp",
+		PopularChannels: []string{"#simp", "#ru", "#en", "#guessthesong", "#gatheryourparty"},
+	},
+}
+
+// getServerByID returns the server config or nil if not found
+func getServerByID(id string) *IRCServer {
+	for _, s := range AvailableServers {
+		if s.ID == id {
+			return &s
+		}
+	}
+	return nil
+}
+
 // Config holds configuration for the web handlers
 type Config struct {
 	SAMAddress string
@@ -43,22 +80,69 @@ type Config struct {
 	DebugMode  bool // Enable debug endpoints (/status, /debug/*)
 }
 
-// Handler holds the HTTP handler state
-type Handler struct {
-	config    Config
-	sessions  *irc.SessionStore
-	templates *template.Template
-	bot       *bot.HistoryBot
+// DialerFactory creates IRC dialers (allows mock injection for testing)
+type DialerFactory func(samAddr, ircDest, sessionID string) irc.IRCDialer
+
+// DefaultDialerFactory returns the default SAM-based dialer factory
+func DefaultDialerFactory() DialerFactory {
+	return func(samAddr, ircDest, sessionID string) irc.IRCDialer {
+		return &irc.SamIRCDialer{
+			SAMAddress: samAddr,
+			IRCDest:    ircDest,
+			SessionID:  sessionID,
+		}
+	}
 }
 
-// NewHandler creates a new HTTP handler
-func NewHandler(config Config, sessions *irc.SessionStore, templates *template.Template, historyBot *bot.HistoryBot) *Handler {
-	return &Handler{
-		config:    config,
-		sessions:  sessions,
-		templates: templates,
-		bot:       historyBot,
+// Handler holds the HTTP handler state
+type Handler struct {
+	config        Config
+	sessions      *irc.SessionStore
+	templates     *template.Template
+	bots          map[string]*bot.HistoryBot // key is server ID (e.g., "postman", "simp")
+	dialerFactory DialerFactory              // factory for creating IRC dialers (allows testing)
+	metrics       *Metrics                   // application metrics for monitoring
+}
+
+// NewHandler creates a new HTTP handler with default dialer factory and new metrics
+func NewHandler(config Config, sessions *irc.SessionStore, templates *template.Template, historyBots map[string]*bot.HistoryBot) *Handler {
+	return NewHandlerWithMetrics(config, sessions, templates, historyBots, nil, nil)
+}
+
+// NewHandlerWithDialer creates a new HTTP handler with custom dialer factory (for testing)
+func NewHandlerWithDialer(config Config, sessions *irc.SessionStore, templates *template.Template, historyBots map[string]*bot.HistoryBot, dialerFactory DialerFactory) *Handler {
+	return NewHandlerWithMetrics(config, sessions, templates, historyBots, dialerFactory, nil)
+}
+
+// NewHandlerWithMetrics creates a new HTTP handler with metrics and optional custom dialer
+func NewHandlerWithMetrics(config Config, sessions *irc.SessionStore, templates *template.Template, historyBots map[string]*bot.HistoryBot, dialerFactory DialerFactory, metrics *Metrics) *Handler {
+	if dialerFactory == nil {
+		dialerFactory = DefaultDialerFactory()
 	}
+	if metrics == nil {
+		metrics = NewMetrics()
+	}
+	return &Handler{
+		config:        config,
+		sessions:      sessions,
+		templates:     templates,
+		bots:          historyBots,
+		dialerFactory: dialerFactory,
+		metrics:       metrics,
+	}
+}
+
+// GetMetrics returns the handler's metrics instance
+func (h *Handler) GetMetrics() *Metrics {
+	return h.metrics
+}
+
+// getHistoryBot returns the history bot for a given server ID
+func (h *Handler) getHistoryBot(serverID string) *bot.HistoryBot {
+	if h.bots == nil {
+		return nil
+	}
+	return h.bots[serverID]
 }
 
 // generateSessionID generates a random session ID
@@ -120,7 +204,7 @@ func generateDefaultNick() string {
 }
 
 // getMessagesWithHistory gets channel messages, prepending bot history if available and channel is new
-func (h *Handler) getMessagesWithHistory(channel string, ch *irc.ChannelState) []irc.ChatMessage {
+func (h *Handler) getMessagesWithHistory(channel string, ch *irc.ChannelState, serverID string) []irc.ChatMessage {
 	// If history already loaded for this channel, just return current messages
 	if ch.IsHistoryLoaded() {
 		return ch.GetMessages()
@@ -129,13 +213,16 @@ func (h *Handler) getMessagesWithHistory(channel string, ch *irc.ChannelState) [
 	// Mark history as loaded (even if we don't find any, to avoid repeated lookups)
 	ch.SetHistoryLoaded()
 
+	// Get the history bot for this server
+	historyBot := h.getHistoryBot(serverID)
+
 	// If no bot or channel doesn't start with #, return messages as-is
-	if h.bot == nil || !strings.HasPrefix(channel, "#") {
+	if historyBot == nil || !strings.HasPrefix(channel, "#") {
 		return ch.GetMessages()
 	}
 
 	// Get bot history for this channel
-	botHistory := h.bot.GetHistory(channel, 10)
+	botHistory := historyBot.GetHistory(channel, 10)
 	if len(botHistory) == 0 {
 		return ch.GetMessages()
 	}
@@ -182,7 +269,7 @@ func (h *Handler) getOrCreateSessionID(w http.ResponseWriter, r *http.Request) s
 		Path:     "/",
 		MaxAge:   86400 * 7, // 7 days
 		HttpOnly: true,
-		Secure:   true, // Enforce secure cookies
+		Secure:   isSecureRequest(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 
@@ -200,10 +287,14 @@ func (h *Handler) IndexHandler(w http.ResponseWriter, r *http.Request) {
 	session := h.sessions.Get(sessionID)
 
 	theme := h.getTheme(w, r)
+	defaultServer := getServerByID("postman")
 	data := map[string]interface{}{
 		"DefaultNick":    generateDefaultNick(),
-		"DefaultChannel": "#i2p-chat",
+		"DefaultChannel": defaultServer.DefaultChannel,
+		"DefaultServer":  "postman",
+		"Servers":        AvailableServers,
 		"LastChannel":    "",
+		"LastServer":     "",
 		"Theme":          theme,
 		"CSRFToken":      h.GetCSRFToken(r),
 	}
@@ -213,6 +304,10 @@ func (h *Handler) IndexHandler(w http.ResponseWriter, r *http.Request) {
 		lastChan := session.GetCurrentChannel()
 		if lastChan != "" {
 			data["LastChannel"] = lastChan
+		}
+		lastServer := session.GetServerID()
+		if lastServer != "" {
+			data["LastServer"] = lastServer
 		}
 	}
 
@@ -239,16 +334,38 @@ func (h *Handler) JoinHandler(w http.ResponseWriter, r *http.Request) {
 	nick := sanitizeNick(r.FormValue("nick"))
 	channel := sanitizeChannel(r.FormValue("channel"))
 
+	// Parse server selection (default to postman)
+	serverID := r.FormValue("server")
+	if serverID == "" {
+		serverID = "postman"
+	}
+
+	server := getServerByID(serverID)
+	if server == nil {
+		http.Error(w, "Invalid server", http.StatusBadRequest)
+		return
+	}
+
 	// Use defaults if validation failed
 	if nick == "" {
 		nick = generateDefaultNick()
 	}
 	if channel == "" {
-		channel = "#i2p-chat"
+		channel = server.DefaultChannel
 	}
 
 	// Get or create IRC session
 	session := h.sessions.Get(sessionID)
+
+	// If existing session is for a different server, close it
+	if session != nil && session.GetServerID() != "" && session.GetServerID() != serverID {
+		log.Printf("Session %s switching servers from %s to %s, closing old session",
+			sessionID[:8], session.GetServerID(), serverID)
+		session.Close()
+		h.sessions.Delete(sessionID)
+		session = nil
+	}
+
 	if session == nil {
 		// Check if server is at capacity
 		if h.sessions.Count() >= h.config.MaxUsers {
@@ -266,14 +383,11 @@ func (h *Handler) JoinHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Create new session
-		dialer := &irc.SamIRCDialer{
-			SAMAddress: h.config.SAMAddress,
-			IRCDest:    h.config.IRCDest,
-			SessionID:  sessionID,
-		}
+		// Create new session with selected server using the dialer factory
+		dialer := h.dialerFactory(h.config.SAMAddress, server.Address, sessionID)
 
 		session = irc.NewIRCSession(sessionID, dialer, nick, nick, "WebIRC User")
+		session.SetServerID(serverID)
 		h.sessions.Set(sessionID, session)
 
 		// Start the IRC connection (non-blocking)
@@ -283,7 +397,8 @@ func (h *Handler) JoinHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		log.Printf("Started IRC session %s, redirecting to connecting page", sessionID[:8])
+		log.Printf("Started IRC session %s to %s (%s), redirecting to connecting page",
+			sessionID[:8], server.Name, server.Address)
 	}
 
 	session.UpdateLastHTTP()
@@ -401,8 +516,11 @@ func (h *Handler) MessagesHandler(w http.ResponseWriter, r *http.Request) {
 		ch = session.GetOrCreateChannel(channel)
 	}
 
+	// Get server ID for this session
+	serverID := session.GetServerID()
+
 	// Get messages with bot history if available
-	messages := h.getMessagesWithHistory(channel, ch)
+	messages := h.getMessagesWithHistory(channel, ch, serverID)
 	users := ch.GetUsers()
 	sort.Strings(users)
 
@@ -412,17 +530,26 @@ func (h *Handler) MessagesHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Get all channels for sidebar
 	allChannels := session.GetAllChannels()
+	server := getServerByID(serverID)
+	var popularChannels []string
+	if server != nil {
+		popularChannels = server.PopularChannels
+	} else {
+		// Fallback to postman channels
+		popularChannels = AvailableServers[0].PopularChannels
+	}
 
 	data := map[string]interface{}{
-		"Channel":      channel,
-		"Nick":         session.GetNick(),
-		"Status":       session.GetStatus(),
-		"Messages":     messages,
-		"Users":        users,
-		"HideJoinPart": hideJoinPart,
-		"Theme":        theme,
-		"AllChannels":  allChannels,
-		"CSRFToken":    h.GetCSRFToken(r),
+		"Channel":         channel,
+		"Nick":            session.GetNick(),
+		"Status":          session.GetStatus(),
+		"Messages":        messages,
+		"Users":           users,
+		"HideJoinPart":    hideJoinPart,
+		"Theme":           theme,
+		"AllChannels":     allChannels,
+		"PopularChannels": popularChannels,
+		"CSRFToken":       h.GetCSRFToken(r),
 	}
 
 	if err := h.templates.ExecuteTemplate(w, "messages.html", data); err != nil {
@@ -449,7 +576,14 @@ func (h *Handler) ConnectingHandler(w http.ResponseWriter, r *http.Request) {
 		channel = session.GetCurrentChannel()
 	}
 	if channel == "" {
-		channel = "#i2p-chat"
+		// Use server-specific default channel
+		serverID := session.GetServerID()
+		server := getServerByID(serverID)
+		if server != nil {
+			channel = server.DefaultChannel
+		} else {
+			channel = "#i2p-chat"
+		}
 	}
 
 	// Check if registered
@@ -517,7 +651,7 @@ func (h *Handler) StatusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// DebugHistoryHandler handles GET /debug/history?channel=NAME - shows what bot has recorded (requires DebugMode)
+// DebugHistoryHandler handles GET /debug/history?server=NAME&channel=NAME - shows what bot has recorded (requires DebugMode)
 func (h *Handler) DebugHistoryHandler(w http.ResponseWriter, r *http.Request) {
 	if !h.config.DebugMode {
 		http.NotFound(w, r)
@@ -526,27 +660,40 @@ func (h *Handler) DebugHistoryHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
-	if h.bot == nil {
-		fmt.Fprintf(w, "History Bot Debug\n")
-		fmt.Fprintf(w, "=================\n\n")
-		fmt.Fprintf(w, "ERROR: History bot is not running\n")
+	fmt.Fprintf(w, "History Bot Debug\n")
+	fmt.Fprintf(w, "=================\n\n")
+
+	if h.bots == nil || len(h.bots) == 0 {
+		fmt.Fprintf(w, "ERROR: No history bots are running\n")
 		return
 	}
 
+	// List available bots
+	fmt.Fprintf(w, "Available bots:\n")
+	for serverID := range h.bots {
+		fmt.Fprintf(w, "  - %s\n", serverID)
+	}
+	fmt.Fprintf(w, "\n")
+
+	serverID := r.URL.Query().Get("server")
 	channel := r.URL.Query().Get("channel")
-	if channel == "" {
-		fmt.Fprintf(w, "History Bot Debug\n")
-		fmt.Fprintf(w, "=================\n\n")
-		fmt.Fprintf(w, "Usage: /debug/history?channel=#i2p-chat\n")
-		fmt.Fprintf(w, "\nAvailable channels: #i2p-chat, #i2p\n")
+
+	if serverID == "" || channel == "" {
+		fmt.Fprintf(w, "Usage: /debug/history?server=postman&channel=#i2p-chat\n")
+		fmt.Fprintf(w, "       /debug/history?server=simp&channel=#simp\n")
+		return
+	}
+
+	historyBot := h.getHistoryBot(serverID)
+	if historyBot == nil {
+		fmt.Fprintf(w, "ERROR: No history bot found for server '%s'\n", serverID)
 		return
 	}
 
 	// Get up to 50 messages from bot history
-	messages := h.bot.GetHistory(channel, 50)
+	messages := historyBot.GetHistory(channel, 50)
 
-	fmt.Fprintf(w, "History Bot Debug\n")
-	fmt.Fprintf(w, "=================\n\n")
+	fmt.Fprintf(w, "Server: %s\n", serverID)
 	fmt.Fprintf(w, "Channel: %s\n", channel)
 	fmt.Fprintf(w, "Messages stored: %d\n\n", len(messages))
 
@@ -573,6 +720,77 @@ func (h *Handler) DebugHistoryHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		fmt.Fprintf(w, "\n")
 	}
+}
+
+// HealthHandler handles GET /health - health check endpoint for monitoring (UptimeRobot, etc.)
+func (h *Handler) HealthHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	healthy := true
+	var issues []string
+
+	// Check session store is accessible
+	sessionCount := h.sessions.Count()
+
+	// Check history bots health
+	botsHealthy := 0
+	botsTotal := 0
+	botStatus := make(map[string]bool)
+
+	if h.bots != nil {
+		for serverID, bot := range h.bots {
+			botsTotal++
+			if bot.IsHealthy() {
+				botsHealthy++
+				botStatus[serverID] = true
+			} else {
+				botStatus[serverID] = false
+				issues = append(issues, fmt.Sprintf("history bot '%s' unhealthy", serverID))
+			}
+		}
+	}
+
+	// If any bot is unhealthy, mark overall health as degraded
+	if botsTotal > 0 && botsHealthy < botsTotal {
+		healthy = false
+	}
+
+	// Build response
+	status := "ok"
+	statusCode := http.StatusOK
+	if !healthy {
+		status = "unhealthy"
+		statusCode = http.StatusServiceUnavailable
+	}
+
+	w.WriteHeader(statusCode)
+	fmt.Fprintf(w, `{"status":"%s","sessions":%d,"bots":{"total":%d,"healthy":%d,"details":{`,
+		status, sessionCount, botsTotal, botsHealthy)
+
+	// Add bot details
+	first := true
+	for serverID, isHealthy := range botStatus {
+		if !first {
+			fmt.Fprint(w, ",")
+		}
+		first = false
+		fmt.Fprintf(w, `"%s":%t`, serverID, isHealthy)
+	}
+
+	fmt.Fprint(w, "}}")
+
+	if len(issues) > 0 {
+		fmt.Fprintf(w, `,"issues":[`)
+		for i, issue := range issues {
+			if i > 0 {
+				fmt.Fprint(w, ",")
+			}
+			fmt.Fprintf(w, `"%s"`, issue)
+		}
+		fmt.Fprint(w, "]")
+	}
+
+	fmt.Fprint(w, "}")
 }
 
 // SendHandler handles POST /send

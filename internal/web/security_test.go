@@ -57,34 +57,47 @@ func TestCSRFMiddleware(t *testing.T) {
 	})
 	wrappedHandler := handler.CSRFMiddleware(testHandler)
 
-	// Test 1: GET request should set CSRF cookie
+	// Test 1: GET request should set CSRF cookie and session cookie
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
 	wrappedHandler.ServeHTTP(rec, req)
 
 	cookies := rec.Result().Cookies()
 	var csrfCookie *http.Cookie
+	var sessionCookie *http.Cookie
 	for _, c := range cookies {
 		if c.Name == "csrf_token" {
 			csrfCookie = c
-			break
+		}
+		if c.Name == "session_id" {
+			sessionCookie = c
 		}
 	}
 
 	if csrfCookie == nil {
 		t.Fatal("CSRF cookie not set on GET request")
 	}
-	if !csrfCookie.Secure {
-		t.Error("CSRF cookie should be Secure")
+	// Note: Secure flag is only set for HTTPS requests, not HTTP test requests
+	if csrfCookie.Secure {
+		t.Error("CSRF cookie should NOT be Secure for HTTP requests")
+	}
+
+	// Session cookie should also be set (with Secure flag based on request scheme)
+	if sessionCookie == nil {
+		t.Fatal("Session cookie not set on GET request")
+	}
+	if sessionCookie.Secure {
+		t.Error("Session cookie should NOT be Secure for HTTP requests")
 	}
 
 	token := csrfCookie.Value
 
-	// Test 2: POST request without token should fail
+	// For subsequent requests, we need to include the session cookie to maintain session context
+	// The CSRF token is bound to the session ID, so we need both cookies
+
+	// Test 2: POST request without form token should fail
 	req = httptest.NewRequest("POST", "/", nil)
-	// Add session cookie to maintain session (though CSRF middleware currently uses its own cookie)
-	// But we need to make sure we have the same session context if it mattered.
-	// In our implementation, we check the csrf_token cookie.
+	req.AddCookie(sessionCookie)
 	req.AddCookie(csrfCookie)
 
 	rec = httptest.NewRecorder()
@@ -94,9 +107,10 @@ func TestCSRFMiddleware(t *testing.T) {
 		t.Errorf("POST without token: expected 403, got %d", rec.Code)
 	}
 
-	// Test 3: POST request with invalid token should fail
+	// Test 3: POST request with invalid form token should fail
 	req = httptest.NewRequest("POST", "/", strings.NewReader("csrf_token=invalid"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(sessionCookie)
 	req.AddCookie(csrfCookie)
 
 	rec = httptest.NewRecorder()
@@ -106,9 +120,10 @@ func TestCSRFMiddleware(t *testing.T) {
 		t.Errorf("POST with invalid token: expected 403, got %d", rec.Code)
 	}
 
-	// Test 4: POST request with valid token should succeed
+	// Test 4: POST request with valid form token should succeed
 	req = httptest.NewRequest("POST", "/", strings.NewReader("csrf_token="+token))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(sessionCookie)
 	req.AddCookie(csrfCookie)
 
 	rec = httptest.NewRecorder()
