@@ -200,13 +200,13 @@ func sanitizeChannel(channel string) string {
 
 // generateDefaultNick creates a random default nickname
 func generateDefaultNick() string {
-	bytes := make([]byte, 4)
+	bytes := make([]byte, 3)
 	if _, err := rand.Read(bytes); err != nil {
 		// Fallback to time-based if crypto fails (shouldn't happen)
-		return fmt.Sprintf("user%d", time.Now().UnixNano()%100000)
+		return fmt.Sprintf("webi2puser%d", time.Now().UnixNano()%100000)
 	}
-	// Use hex encoding for alphanumeric result
-	return "user" + hex.EncodeToString(bytes)
+	// Use hex encoding for alphanumeric result (6 hex chars)
+	return "webi2puser" + hex.EncodeToString(bytes)
 }
 
 // getMessagesWithHistory gets channel messages, prepending bot history if available and channel is new

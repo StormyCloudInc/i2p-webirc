@@ -14,7 +14,7 @@
         <iframe src="/chan/{{urlEscape .Channel}}/messages" class="messages-iframe" name="messages"></iframe>
 
         <div class="input-area-fixed">
-            <form method="POST" action="/send" target="messages">
+            <form method="POST" action="/send" target="messages" onsubmit="setTimeout(function(){document.querySelector('input[name=message]').value='';document.querySelector('input[name=message]').focus();},50)">
                 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                 <input type="hidden" name="channel" value="{{.Channel}}">
                 <input type="text" name="message" placeholder="Type a message or /command..." autocomplete="off"

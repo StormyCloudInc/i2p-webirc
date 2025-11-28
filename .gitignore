@@ -1,5 +1,6 @@
 # Binaries
-
+webirc
+loadtest
 cmd/webirc/webirc
 *.exe
 *.dll

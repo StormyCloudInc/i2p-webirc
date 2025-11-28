@@ -71,14 +71,17 @@ const (
 )
 
 var (
-	listenAddr      = flag.String("listen", ":8080", "HTTP server listen address")
-	samAddr         = flag.String("sam-addr", "127.0.0.1:7656", "SAM bridge address")
-	ircDest         = flag.String("irc-dest", "", "I2P IRC server destination (required, for backwards compat)")
-	botChannels     = flag.String("bot-channels", "#i2p-chat,#i2p,#i2p-dev", "Comma-separated list of channels for Postman history bot")
-	simpBotChannels = flag.String("simp-bot-channels", "#simp,#ru,#en,#guessthesong,#gatheryourparty", "Comma-separated list of channels for Simp IRC history bot")
-	botLocalAddr    = flag.String("bot-local-addr", "", "Local TCP address for Postman bot (e.g., 127.0.0.1:6668) - uses I2P tunnel instead of SAM")
-	simpBotLocalAddr = flag.String("simp-bot-local-addr", "", "Local TCP address for Simp bot (e.g., 127.0.0.1:6669) - uses I2P tunnel instead of SAM")
-	debugMode       = flag.Bool("debug", false, "Enable debug endpoints (/status, /debug/*)")
+	listenAddr         = flag.String("listen", ":8080", "HTTP server listen address")
+	samAddr            = flag.String("sam-addr", "127.0.0.1:7656", "SAM bridge address")
+	ircDest            = flag.String("irc-dest", "", "I2P IRC server destination (required, for backwards compat)")
+	botChannels        = flag.String("bot-channels", "#loadtest,#stormycloud", "Comma-separated list of channels for Postman history bot")
+	simpBotChannels    = flag.String("simp-bot-channels", "#simp,#ru,#en,#guessthesong,#gatheryourparty", "Comma-separated list of channels for Simp IRC history bot")
+	botLocalAddr       = flag.String("bot-local-addr", "127.0.0.1:6668", "Local TCP address for Postman bot")
+	simpBotLocalAddr   = flag.String("simp-bot-local-addr", "127.0.0.1:6667", "Local TCP address for Simp bot")
+	botNick            = flag.String("bot-nick", "StormyBot", "Bot nickname")
+	postmanNickServPass = flag.String("postman-nickserv-pass", "", "NickServ password for Postman server (optional)")
+	simpNickServPass   = flag.String("simp-nickserv-pass", "", "NickServ password for Simp server (optional)")
+	debugMode          = flag.Bool("debug", false, "Enable debug endpoints (/status, /debug/*)")
 )
 
 func main() {
@@ -119,14 +122,16 @@ func main() {
 			}
 		}
 		if len(channels) > 0 {
-			var postmanBot *bot.HistoryBot
-			if *botLocalAddr != "" {
-				log.Printf("Starting Postman history bot (local TCP: %s) for channels: %v", *botLocalAddr, channels)
-				postmanBot = bot.NewHistoryBotLocal("HistoryBot", *botLocalAddr, channels, 50)
-			} else {
-				log.Printf("Starting Postman history bot (SAM) for channels: %v", channels)
-				postmanBot = bot.NewHistoryBot("historybot-postman", "HistoryBot", *samAddr, "irc.postman.i2p", channels, 50)
-			}
+			log.Printf("Starting Postman history bot (local TCP: %s) as %s for channels: %v", *botLocalAddr, *botNick, channels)
+			postmanBot := bot.NewHistoryBotWithConfig(bot.BotConfig{
+				Nick:         *botNick,
+				LocalAddr:    *botLocalAddr,
+				Channels:     channels,
+				HistorySize:  50,
+				NickServPass: *postmanNickServPass,
+				UseBot:       true, // +B mode
+				ServerName:   "postman",
+			})
 			if err := postmanBot.Start(); err != nil {
 				log.Printf("Warning: Failed to start Postman history bot: %v", err)
 			} else {
@@ -146,14 +151,16 @@ func main() {
 			}
 		}
 		if len(channels) > 0 {
-			var simpBot *bot.HistoryBot
-			if *simpBotLocalAddr != "" {
-				log.Printf("Starting Simp history bot (local TCP: %s) for channels: %v", *simpBotLocalAddr, channels)
-				simpBot = bot.NewHistoryBotLocal("HistoryBot", *simpBotLocalAddr, channels, 50)
-			} else {
-				log.Printf("Starting Simp history bot (SAM) for channels: %v", channels)
-				simpBot = bot.NewHistoryBot("historybot-simp", "HistoryBot", *samAddr, "edg3okvdbjcsbeqrwsakn6jog4mw27i3ri4ychl7kdn3u4xhtf3a.b32.i2p:6667", channels, 50)
-			}
+			log.Printf("Starting Simp history bot (local TCP: %s) as %s for channels: %v", *simpBotLocalAddr, *botNick, channels)
+			simpBot := bot.NewHistoryBotWithConfig(bot.BotConfig{
+				Nick:         *botNick,
+				LocalAddr:    *simpBotLocalAddr,
+				Channels:     channels,
+				HistorySize:  50,
+				NickServPass: *simpNickServPass,
+				UseBot:       true, // +B mode
+				ServerName:   "simp",
+			})
 			if err := simpBot.Start(); err != nil {
 				log.Printf("Warning: Failed to start Simp history bot: %v", err)
 			} else {

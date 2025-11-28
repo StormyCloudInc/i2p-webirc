@@ -1,6 +1,6 @@
 # I2P WebIRC
 
-A JavaScript-free web IRC client for the I2P network using SAMv3. Features multi-channel support, direct messages, and a retro terminal interface with no client-side JavaScript required.
+A JavaScript-free web IRC client for the I2P network using SAMv3. Features multi-channel support, direct messages, channel history bots, and a retro terminal interface with no client-side JavaScript required.
 
 ## Features
 
@@ -15,6 +15,7 @@ A JavaScript-free web IRC client for the I2P network using SAMv3. Features multi
 - **Customizable Display**: Hide/show join/part messages
 - **Auto-Reconnect**: Handles network interruptions with exponential backoff
 - **Dark Terminal Theme**: Retro monospace design with green-on-black styling
+- **History Bots**: Optional IRC bots that maintain channel history for new users
 
 ## Prerequisites
 
@@ -58,7 +59,21 @@ Then open `http://localhost:8080` in your browser.
 |------|-------------|---------|
 | `-listen` | HTTP server listen address | `:8080` |
 | `-sam-addr` | SAM bridge address | `127.0.0.1:7656` |
-| `-irc-dest` | I2P IRC server destination | `irc.example.i2p` |
+| `-irc-dest` | I2P IRC server destination (required) | - |
+| `-debug` | Enable debug endpoints (`/status`, `/debug/*`) | `false` |
+
+#### History Bot Flags
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-bot-nick` | Bot nickname | `StormyBot` |
+| `-bot-channels` | Comma-separated channels for Postman bot | `#loadtest,#stormycloud` |
+| `-bot-local-addr` | Local TCP address for Postman bot | `127.0.0.1:6668` |
+| `-postman-nickserv-pass` | NickServ password for Postman server | - |
+| `-simp-bot-channels` | Comma-separated channels for Simp bot | `#simp,#ru,#en,...` |
+| `-simp-bot-local-addr` | Local TCP address for Simp bot | `127.0.0.1:6667` |
+| `-simp-nickserv-pass` | NickServ password for Simp server | - |
+
 
 ### IRC Commands
 
@@ -103,6 +118,50 @@ Once connected, you can use these IRC commands:
 7. **Direct Messages**: DMs are treated as special channels named after the recipient
 8. **Session Cleanup**: Sessions automatically expire after 30 minutes of inactivity
 
+## History Bots
+
+History bots are optional IRC bots that maintain channel message history. When a new user joins a channel, they can see recent messages that were sent before they connected.
+
+### How It Works
+
+1. The bot connects to IRC servers via local I2P tunnels (or SAM bridge)
+2. It joins configured channels and listens for all messages
+3. Messages are stored in a ring buffer (default: last 50 messages per channel)
+4. When users join the web interface, they receive the buffered history
+5. The bot auto-reconnects with exponential backoff if disconnected
+
+### Configuration
+
+History bots use local TCP tunnels to I2P IRC servers. You need to configure I2P tunnels that forward to the IRC servers:
+
+- **Postman IRC**: Create a client tunnel to `irc.postman.i2p` → local port 6668
+- **Simp IRC**: Create a client tunnel to `irc.simp.i2p` → local port 6667
+
+Example startup with history bots:
+
+```bash
+./webirc \
+  -listen :8080 \
+  -sam-addr 127.0.0.1:7656 \
+  -irc-dest irc.postman.i2p \
+  -bot-nick MyBot \
+  -bot-channels "#general,#help" \
+  -bot-local-addr 127.0.0.1:6668 \
+  -postman-nickserv-pass "your-password"
+```
+
+### Features
+
+- **NickServ Integration**: Automatically identifies with NickServ if password is provided
+- **Bot Mode (+B)**: Sets bot mode to identify as a bot to the network
+- **Nick Collision Handling**: Automatically tries alternate nicks if primary is taken
+- **Auto-Reconnect**: Reconnects with exponential backoff (5s to 2min) on disconnect
+- **Multi-Server Support**: Run separate bots for different IRC networks
+
+### Security Note
+
+Bot passwords are passed via command-line flags (`-postman-nickserv-pass`, `-simp-nickserv-pass`) and are **never stored in the repository**. For production deployments, consider using environment variables or a secrets manager.
+
 ## Architecture
 
 ```
@@ -110,6 +169,8 @@ i2p-irc/
 ├── cmd/webirc/
 │   └── main.go                 - Application entry point, HTTP server setup
 ├── internal/
+│   ├── bot/
+│   │   └── history.go          - History bot implementation
 │   ├── irc/
 │   │   ├── dialer_sam.go       - I2P SAM connection handling
 │   │   ├── session.go          - IRC session and channel management
@@ -157,12 +218,13 @@ The application uses sensible defaults but can be customized:
 
 - **Backend**: Go 1.21+ with `net/http` standard library
 - **Templating**: `html/template` for server-side rendering
-- **I2P Integration**: `github.com/go-i2p/go-sam3` for SAM bridge connectivity
+- **I2P Integration**: `github.com/go-i2p/go-sam-go` for SAM bridge connectivity
 - **No Frontend Dependencies**: Pure HTML5/CSS3, zero JavaScript
 
 ### Project Structure
 
 - `cmd/webirc/main.go` - Entry point, server initialization
+- `internal/bot/` - History bot implementation
 - `internal/irc/` - I2P and IRC protocol handling
 - `internal/web/` - HTTP handlers and web logic
 - `templates/` - HTML templates
@@ -230,7 +292,7 @@ MIT License - See LICENSE file for details
 ## Acknowledgments
 
 - [I2P Project](https://geti2p.net/) - Anonymous network layer
-- [go-sam3](https://github.com/go-i2p/go-sam3) - Go library for I2P SAM bridge
+- [go-sam-go](https://github.com/go-i2p/go-sam-go) - Go library for I2P SAM bridge
 - IRC Protocol - RFC 1459 and extensions
 
 ## Related Projects

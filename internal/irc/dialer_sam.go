@@ -6,7 +6,8 @@ import (
 	"strings"
 	"sync"
 
-	sam3 "github.com/eyedeekay/sam3"
+	sam3 "github.com/go-i2p/go-sam-go"
+	"github.com/go-i2p/go-sam-go/stream"
 )
 
 // IRCDialer is an interface for creating IRC connections
@@ -23,7 +24,7 @@ type SamIRCDialer struct {
 
 	mu     sync.Mutex
 	client *sam3.SAM
-	stream *sam3.StreamSession
+	stream *stream.StreamSession
 }
 
 // Dial creates a new I2P streaming connection to the IRC destination
@@ -48,13 +49,14 @@ func (d *SamIRCDialer) Dial() (net.Conn, error) {
 		}
 
 		tunnelName := "webirc-" + d.SessionID
-		stream, err := client.NewStreamSession(tunnelName, keys, sam3.Options_Default)
+		// Use nil for default options in go-sam-go
+		streamSession, err := client.NewStreamSession(tunnelName, keys, nil)
 		if err != nil {
 			client.Close()
 			d.client = nil
 			return nil, fmt.Errorf("failed to create stream session: %w", err)
 		}
-		d.stream = stream
+		d.stream = streamSession
 	}
 
 	// Parse destination and port (format: "host" or "host:port")
@@ -69,29 +71,35 @@ func (d *SamIRCDialer) Dial() (net.Conn, error) {
 		}
 	}
 
-	// Use Lookup to resolve the I2P destination name/address
-	addr, err := d.stream.Lookup(dest)
-	if err != nil {
-		return nil, fmt.Errorf("failed to lookup I2P destination %s: %w", dest, err)
-	}
-
-	// Dial with port if specified
+	// Dial the destination - go-sam-go's Dial handles lookup internally
 	var conn net.Conn
+	var err error
 	if port != "" {
-		// addr.Base32() returns just the hash without .b32.i2p suffix
-		b32Addr := addr.Base32()
-		if !strings.HasSuffix(b32Addr, ".b32.i2p") {
-			b32Addr = b32Addr + ".b32.i2p"
-		}
-		conn, err = d.stream.Dial("tcp", b32Addr+":"+port)
+		// Dial with port appended
+		conn, err = d.stream.Dial(dest + ":" + port)
 	} else {
-		conn, err = d.stream.DialI2P(addr)
+		conn, err = d.stream.Dial(dest)
 	}
 	if err != nil {
+		// Dial failed - reset the SAM session so next attempt creates fresh connection
+		d.resetSession()
 		return nil, fmt.Errorf("failed to dial IRC destination %s: %w", d.IRCDest, err)
 	}
 
 	return conn, nil
+}
+
+// resetSession closes and resets the SAM session for a fresh connection attempt
+// Must be called with d.mu held
+func (d *SamIRCDialer) resetSession() {
+	if d.stream != nil {
+		d.stream.Close()
+		d.stream = nil
+	}
+	if d.client != nil {
+		d.client.Close()
+		d.client = nil
+	}
 }
 
 // Close shuts down the SAM session and client
