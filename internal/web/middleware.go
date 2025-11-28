@@ -97,6 +97,9 @@ func (h *Handler) CSRFMiddleware(next http.Handler) http.Handler {
 		// Get or create session ID
 		sessionID := h.getOrCreateSessionID(w, r)
 
+		// Store session ID in context for downstream handlers
+		r = setSessionIDInContext(r, sessionID)
+
 		// Get existing CSRF token from cookie
 		csrfCookie, err := r.Cookie("csrf_token")
 		var token string

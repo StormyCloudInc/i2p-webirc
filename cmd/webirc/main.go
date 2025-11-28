@@ -76,6 +76,8 @@ var (
 	ircDest         = flag.String("irc-dest", "", "I2P IRC server destination (required, for backwards compat)")
 	botChannels     = flag.String("bot-channels", "#i2p-chat,#i2p,#i2p-dev", "Comma-separated list of channels for Postman history bot")
 	simpBotChannels = flag.String("simp-bot-channels", "#simp,#ru,#en,#guessthesong,#gatheryourparty", "Comma-separated list of channels for Simp IRC history bot")
+	botLocalAddr    = flag.String("bot-local-addr", "", "Local TCP address for Postman bot (e.g., 127.0.0.1:6668) - uses I2P tunnel instead of SAM")
+	simpBotLocalAddr = flag.String("simp-bot-local-addr", "", "Local TCP address for Simp bot (e.g., 127.0.0.1:6669) - uses I2P tunnel instead of SAM")
 	debugMode       = flag.Bool("debug", false, "Enable debug endpoints (/status, /debug/*)")
 )
 
@@ -117,8 +119,14 @@ func main() {
 			}
 		}
 		if len(channels) > 0 {
-			log.Printf("Starting Postman history bot for channels: %v", channels)
-			postmanBot := bot.NewHistoryBot("historybot-postman", "HistoryBot", *samAddr, "irc.postman.i2p", channels, 50)
+			var postmanBot *bot.HistoryBot
+			if *botLocalAddr != "" {
+				log.Printf("Starting Postman history bot (local TCP: %s) for channels: %v", *botLocalAddr, channels)
+				postmanBot = bot.NewHistoryBotLocal("HistoryBot", *botLocalAddr, channels, 50)
+			} else {
+				log.Printf("Starting Postman history bot (SAM) for channels: %v", channels)
+				postmanBot = bot.NewHistoryBot("historybot-postman", "HistoryBot", *samAddr, "irc.postman.i2p", channels, 50)
+			}
 			if err := postmanBot.Start(); err != nil {
 				log.Printf("Warning: Failed to start Postman history bot: %v", err)
 			} else {
@@ -138,8 +146,14 @@ func main() {
 			}
 		}
 		if len(channels) > 0 {
-			log.Printf("Starting Simp history bot for channels: %v", channels)
-			simpBot := bot.NewHistoryBot("historybot-simp", "HistoryBot", *samAddr, "edg3okvdbjcsbeqrwsakn6jog4mw27i3ri4ychl7kdn3u4xhtf3a.b32.i2p:6667", channels, 50)
+			var simpBot *bot.HistoryBot
+			if *simpBotLocalAddr != "" {
+				log.Printf("Starting Simp history bot (local TCP: %s) for channels: %v", *simpBotLocalAddr, channels)
+				simpBot = bot.NewHistoryBotLocal("HistoryBot", *simpBotLocalAddr, channels, 50)
+			} else {
+				log.Printf("Starting Simp history bot (SAM) for channels: %v", channels)
+				simpBot = bot.NewHistoryBot("historybot-simp", "HistoryBot", *samAddr, "edg3okvdbjcsbeqrwsakn6jog4mw27i3ri4ychl7kdn3u4xhtf3a.b32.i2p:6667", channels, 50)
+			}
 			if err := simpBot.Start(); err != nil {
 				log.Printf("Warning: Failed to start Simp history bot: %v", err)
 			} else {
@@ -227,6 +241,9 @@ func loadTemplates() (*template.Template, error) {
 
 // sessionCleanup periodically cleans up inactive sessions
 func sessionCleanup(sessions *irc.SessionStore) {
+	log.Printf("Session cleanup goroutine started (timeout: %v, interval: %v)",
+		SessionInactivityTimeout, CleanupInterval)
+
 	ticker := time.NewTicker(CleanupInterval)
 	defer ticker.Stop()
 
@@ -234,18 +251,46 @@ func sessionCleanup(sessions *irc.SessionStore) {
 		now := time.Now()
 		allSessions := sessions.GetAll()
 
-		for _, session := range allSessions {
-			lastHTTP := session.GetLastHTTP()
-			if now.Sub(lastHTTP) > SessionInactivityTimeout {
-				log.Printf("Cleaning up inactive session: %s (last activity: %v ago)",
-					session.ID[:8], now.Sub(lastHTTP))
+		if len(allSessions) > 0 {
+			log.Printf("Cleanup check: %d sessions to check", len(allSessions))
+		}
 
-				// Close the session
+		cleaned := 0
+		for _, session := range allSessions {
+			status := session.GetStatus()
+			lastHTTP := session.GetLastHTTP()
+			idleTime := now.Sub(lastHTTP)
+
+			// Clean up sessions that are:
+			// 1. Inactive for too long (normal timeout)
+			// 2. In "abandoned" state (reconnect aborted due to inactivity)
+			// 3. In "failed" state (reconnect failed after all retries)
+			shouldCleanup := false
+			reason := ""
+
+			if idleTime > SessionInactivityTimeout {
+				shouldCleanup = true
+				reason = "inactive"
+			} else if status == "abandoned" || status == "failed" {
+				shouldCleanup = true
+				reason = status
+			}
+
+			if shouldCleanup {
+				log.Printf("Cleaning up %s session: %s (status: %s, last activity: %v ago)",
+					reason, session.ID[:8], status, idleTime.Round(time.Second))
+
+				// Close the session (this also closes the SAM dialer)
 				session.Close()
 
 				// Remove from store
 				sessions.Delete(session.ID)
+				cleaned++
 			}
+		}
+
+		if cleaned > 0 {
+			log.Printf("Cleanup completed: removed %d sessions", cleaned)
 		}
 	}
 }

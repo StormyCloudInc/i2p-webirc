@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -16,6 +17,11 @@ import (
 	"github.com/dustinfields/i2p-irc/internal/bot"
 	"github.com/dustinfields/i2p-irc/internal/irc"
 )
+
+// Context key for session ID
+type contextKey string
+
+const sessionIDContextKey contextKey = "sessionID"
 
 const (
 	SessionCookieName = "webirc_session"
@@ -254,8 +260,28 @@ func (h *Handler) getMessagesWithHistory(channel string, ch *irc.ChannelState, s
 	return ch.GetMessages()
 }
 
-// getOrCreateSessionID gets or creates a session ID from cookies
+// getSessionIDFromContext retrieves the session ID from request context (set by SessionMiddleware)
+func getSessionIDFromContext(r *http.Request) string {
+	if val := r.Context().Value(sessionIDContextKey); val != nil {
+		return val.(string)
+	}
+	return ""
+}
+
+// setSessionIDInContext returns a new request with the session ID in context
+func setSessionIDInContext(r *http.Request, sessionID string) *http.Request {
+	ctx := context.WithValue(r.Context(), sessionIDContextKey, sessionID)
+	return r.WithContext(ctx)
+}
+
+// getOrCreateSessionID gets or creates a session ID, using context if available
 func (h *Handler) getOrCreateSessionID(w http.ResponseWriter, r *http.Request) string {
+	// First check if session ID is already in context (set by middleware)
+	if sessionID := getSessionIDFromContext(r); sessionID != "" {
+		return sessionID
+	}
+
+	// Check cookie
 	cookie, err := r.Cookie(SessionCookieName)
 	if err == nil && cookie.Value != "" {
 		return cookie.Value

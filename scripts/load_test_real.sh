@@ -53,10 +53,26 @@ echo ""
 # Get CSRF token from cookies (the server sets it as a cookie, not in HTML)
 get_csrf_token() {
     local cookie_file="$1"
-    # First request to get the cookies set
-    curl -s -c "$cookie_file" "$TARGET_URL/" > /dev/null
+    local log_file="$2"
+    # First request to get the cookies set (-L follows redirects)
+    local http_code
+    http_code=$(curl -s -L -c "$cookie_file" -b "$cookie_file" "$TARGET_URL/" -o /dev/null -w "%{http_code}" 2>&1)
+
+    if [ "$http_code" -ge 400 ]; then
+        echo "CSRF fetch got HTTP $http_code from $TARGET_URL/" >> "$log_file"
+        return 1
+    fi
+
     # Extract csrf_token from the cookie file (Netscape format: domain, flag, path, secure, expiry, name, value)
-    grep -E 'csrf_token' "$cookie_file" | awk '{print $NF}' | head -1
+    local token
+    token=$(grep -E 'csrf_token' "$cookie_file" 2>/dev/null | awk '{print $NF}' | head -1)
+
+    if [ -z "$token" ]; then
+        echo "CSRF token not found in cookie file. Cookie contents:" >> "$log_file"
+        cat "$cookie_file" >> "$log_file" 2>/dev/null
+    fi
+
+    echo "$token"
 }
 
 # Simulate a single user
@@ -73,7 +89,7 @@ simulate_user() {
 
     # Get CSRF token
     local csrf_token
-    csrf_token=$(get_csrf_token "$cookie_file")
+    csrf_token=$(get_csrf_token "$cookie_file" "$log_file")
 
     if [ -z "$csrf_token" ]; then
         echo "User $user_id: Failed to get CSRF token" >> "$log_file"
@@ -81,25 +97,32 @@ simulate_user() {
         return 1
     fi
 
-    echo "User $user_id: Got CSRF token" >> "$log_file"
+    echo "User $user_id: Got CSRF token: ${csrf_token:0:20}..." >> "$log_file"
 
     # URL encode channel (# -> %23)
     local encoded_channel
     encoded_channel=$(echo "$CHANNEL" | sed 's/#/%23/g')
 
-    # Join channel
-    local join_start join_end join_status
+    # Join channel (--post301/302/303 maintains POST through redirects)
+    local join_start join_end join_status join_response
     join_start=$(date +%s%3N)
-    join_status=$(curl -s -c "$cookie_file" -b "$cookie_file" \
+    local join_output_file="$RESULTS_DIR/join_${user_id}.txt"
+    join_status=$(curl -s -L --post301 --post302 --post303 -c "$cookie_file" -b "$cookie_file" \
         -X POST "$TARGET_URL/join" \
-        -d "nick=$nick&channel=$encoded_channel&server=$SERVER&csrf_token=$csrf_token" \
-        -o /dev/null -w "%{http_code}" 2>&1)
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        --data-urlencode "nick=$nick" \
+        --data-urlencode "channel=$CHANNEL" \
+        --data-urlencode "server=$SERVER" \
+        --data-urlencode "csrf_token=$csrf_token" \
+        -o "$join_output_file" -w "%{http_code}" 2>&1)
     join_end=$(date +%s%3N)
 
     local join_latency=$((join_end - join_start))
 
     if [[ "$join_status" -ge 400 ]]; then
         echo "User $user_id: Join failed with status $join_status (${join_latency}ms)" >> "$log_file"
+        echo "Response body:" >> "$log_file"
+        head -10 "$join_output_file" >> "$log_file" 2>/dev/null
         echo "1" > "$metrics_file.join_failed"
         return 1
     fi
@@ -110,22 +133,26 @@ simulate_user() {
     # Send messages until test ends
     local msg_count=0
     local end_time=$(($(date +%s) + TEST_DURATION))
+    local send_output_file="$RESULTS_DIR/send_${user_id}.txt"
 
     while [ "$(date +%s)" -lt "$end_time" ]; do
         ((msg_count++))
 
         local msg_start msg_end msg_status
         msg_start=$(date +%s%3N)
-        msg_status=$(curl -s -b "$cookie_file" -c "$cookie_file" \
+        msg_status=$(curl -s -L --post301 --post302 --post303 -b "$cookie_file" -c "$cookie_file" \
             -X POST "$TARGET_URL/send" \
-            -d "message=Test+message+$msg_count+from+$nick&channel=$encoded_channel&csrf_token=$csrf_token" \
-            -o /dev/null -w "%{http_code}" 2>&1)
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "message=Test message $msg_count from $nick" \
+            --data-urlencode "channel=$CHANNEL" \
+            --data-urlencode "csrf_token=$csrf_token" \
+            -o "$send_output_file" -w "%{http_code}" 2>&1)
         msg_end=$(date +%s%3N)
 
         local msg_latency=$((msg_end - msg_start))
 
         if [[ "$msg_status" -lt 400 ]]; then
-            echo "User $user_id: Sent message $msg_count (${msg_latency}ms)" >> "$log_file"
+            echo "User $user_id: Sent message $msg_count (${msg_latency}ms, status: $msg_status)" >> "$log_file"
             # Update success counter
             local current_success current_latency
             current_success=$(cat "$metrics_file.success")
@@ -133,7 +160,9 @@ simulate_user() {
             current_latency=$(cat "$metrics_file.latency_sum")
             echo $((current_latency + msg_latency)) > "$metrics_file.latency_sum"
         else
-            echo "User $user_id: Message $msg_count failed with $msg_status" >> "$log_file"
+            echo "User $user_id: Message $msg_count failed with status $msg_status" >> "$log_file"
+            echo "Response body:" >> "$log_file"
+            head -5 "$send_output_file" >> "$log_file" 2>/dev/null
             local current_failed
             current_failed=$(cat "$metrics_file.failed")
             echo $((current_failed + 1)) > "$metrics_file.failed"

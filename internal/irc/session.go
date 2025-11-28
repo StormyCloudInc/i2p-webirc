@@ -12,10 +12,11 @@ import (
 )
 
 const (
-	MaxMessages         = 200
-	ReconnectMaxRetries = 10
-	ReconnectBaseDelay  = 2 * time.Second
-	ReconnectMaxDelay   = 2 * time.Minute
+	MaxMessages           = 200
+	ReconnectMaxRetries   = 10
+	ReconnectBaseDelay    = 2 * time.Second
+	ReconnectMaxDelay     = 2 * time.Minute
+	ReconnectHTTPTimeout  = 10 * time.Minute // Stop reconnecting if no HTTP activity for this long
 )
 
 // shortID returns a truncated session ID for logging (first 8 chars)
@@ -417,6 +418,7 @@ func (s *IRCSession) readLoop() {
 }
 
 // reconnect attempts to reconnect with exponential backoff
+// It will abort if the user hasn't made any HTTP requests recently
 func (s *IRCSession) reconnect() {
 	s.setStatus("reconnecting")
 	s.setRegistered(false)
@@ -432,6 +434,17 @@ func (s *IRCSession) reconnect() {
 	delay := ReconnectBaseDelay
 
 	for retry := 0; retry < ReconnectMaxRetries; retry++ {
+		// Check if user is still active (has made HTTP requests recently)
+		// If not, abort reconnection to allow session cleanup
+		lastHTTP := s.GetLastHTTP()
+		httpIdleTime := time.Since(lastHTTP)
+		if httpIdleTime > ReconnectHTTPTimeout {
+			log.Printf("Session %s: aborting reconnect - user inactive for %v (no HTTP requests)",
+				shortID(s.ID), httpIdleTime.Round(time.Second))
+			s.setStatus("abandoned")
+			return
+		}
+
 		log.Printf("Session %s: reconnecting (attempt %d/%d)...", shortID(s.ID), retry+1, ReconnectMaxRetries)
 
 		// Wait before retry

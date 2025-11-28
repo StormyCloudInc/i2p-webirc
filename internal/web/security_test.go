@@ -32,7 +32,7 @@ func TestSecurityHeadersMiddleware(t *testing.T) {
 	headers := rec.Header()
 
 	expectedHeaders := map[string]string{
-		"Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self';",
+		"Content-Security-Policy": "default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self'; frame-ancestors 'self' https://beta.i2p.net https://i2p.net https://geti2p.net",
 		"X-Frame-Options":         "SAMEORIGIN",
 		"X-Content-Type-Options":  "nosniff",
 		"Referrer-Policy":         "strict-origin-when-cross-origin",
@@ -69,7 +69,7 @@ func TestCSRFMiddleware(t *testing.T) {
 		if c.Name == "csrf_token" {
 			csrfCookie = c
 		}
-		if c.Name == "session_id" {
+		if c.Name == "webirc_session" {
 			sessionCookie = c
 		}
 	}
