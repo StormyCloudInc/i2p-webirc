@@ -891,8 +891,9 @@ func (h *Handler) SendHandler(w http.ResponseWriter, r *http.Request) {
 					})
 				} else {
 					session.SendMessage(fmt.Sprintf("JOIN %s", newChannel))
-					// Redirect to new channel - use target="_parent" in the redirect page
-					http.Redirect(w, r, "/chan/"+url.PathEscape(newChannel), http.StatusSeeOther)
+					// Redirect to the messages view of the new channel (stays in iframe)
+					// User can click the channel in sidebar to fully switch (uses target="_parent")
+					http.Redirect(w, r, "/chan/"+url.PathEscape(newChannel)+"/messages", http.StatusSeeOther)
 					return
 				}
 			}
