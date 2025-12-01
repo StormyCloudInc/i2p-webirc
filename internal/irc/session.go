@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"sort"
 	"strings"
@@ -12,12 +13,23 @@ import (
 )
 
 const (
-	MaxMessages           = 200
-	ReconnectMaxRetries   = 10
-	ReconnectBaseDelay    = 2 * time.Second
-	ReconnectMaxDelay     = 2 * time.Minute
-	ReconnectHTTPTimeout  = 10 * time.Minute // Stop reconnecting if no HTTP activity for this long
+	MaxMessages          = 200
+	ReconnectMaxRetries  = 10
+	ReconnectBaseDelay   = 5 * time.Second  // Increased from 2s to 5s for I2P stability
+	ReconnectMaxDelay    = 5 * time.Minute  // Allow more time for I2P tunnels to recover
+	ReconnectHTTPTimeout = 10 * time.Minute // Stop reconnecting if no HTTP activity for this long
+
+	PingInterval    = 30 * time.Second
+	PingJitter      = 15 * time.Second
+	KeepAlivePeriod = 2 * time.Minute
+	ReadDeadline    = 2 * time.Minute
+	WriteDeadline   = 30 * time.Second
+	ReconnectJitter = 2 * time.Second
 )
+
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
 
 // shortID returns a truncated session ID for logging (first 8 chars)
 // This prevents full session IDs from appearing in logs which could aid session hijacking
@@ -173,6 +185,7 @@ func (s *IRCSession) Start() error {
 	s.conn = conn
 	s.status = "connected"
 	s.mu.Unlock()
+	s.configureConnection(conn)
 
 	// Send initial IRC registration
 	s.sendRaw(fmt.Sprintf("NICK %s", s.nick))
@@ -181,6 +194,7 @@ func (s *IRCSession) Start() error {
 	// Start goroutines
 	go s.writeLoop()
 	go s.readLoop()
+	go s.pingLoop()
 
 	return nil
 }
@@ -375,8 +389,37 @@ func (s *IRCSession) sendRaw(msg string) error {
 		return fmt.Errorf("not connected")
 	}
 
+	if WriteDeadline > 0 {
+		conn.SetWriteDeadline(time.Now().Add(WriteDeadline))
+	}
 	_, err := fmt.Fprintf(conn, "%s\r\n", msg)
+	if WriteDeadline > 0 {
+		conn.SetWriteDeadline(time.Time{})
+	}
 	return err
+}
+
+func randomDuration(base, jitter time.Duration) time.Duration {
+	if jitter <= 0 {
+		return base
+	}
+	return base + time.Duration(rand.Int63n(int64(jitter)))
+}
+
+func (s *IRCSession) configureConnection(conn net.Conn) {
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		if err := tcpConn.SetKeepAlive(true); err != nil {
+			log.Printf("Session %s: unable to enable TCP keepalive: %v", shortID(s.ID), err)
+		} else if err := tcpConn.SetKeepAlivePeriod(KeepAlivePeriod); err != nil {
+			log.Printf("Session %s: unable to set keepalive period: %v", shortID(s.ID), err)
+		}
+		if err := tcpConn.SetNoDelay(true); err != nil {
+			log.Printf("Session %s: unable to disable Nagle: %v", shortID(s.ID), err)
+		}
+	}
+	if ReadDeadline > 0 {
+		conn.SetReadDeadline(time.Now().Add(ReadDeadline))
+	}
 }
 
 // writeLoop handles outgoing messages
@@ -386,6 +429,7 @@ func (s *IRCSession) writeLoop() {
 		case msg := <-s.outgoing:
 			if err := s.sendRaw(msg); err != nil {
 				log.Printf("Session %s: write error: %v", shortID(s.ID), err)
+				s.Close() // Close connection to trigger reconnect in readLoop
 				return
 			}
 		case <-s.done:
@@ -396,9 +440,13 @@ func (s *IRCSession) writeLoop() {
 
 // readLoop handles incoming messages and reconnection
 func (s *IRCSession) readLoop() {
-	scanner := bufio.NewScanner(s.conn)
+	conn := s.conn
+	scanner := bufio.NewScanner(conn)
 
 	for {
+		if ReadDeadline > 0 {
+			conn.SetReadDeadline(time.Now().Add(ReadDeadline))
+		}
 		if !scanner.Scan() {
 			// Connection lost
 			if err := scanner.Err(); err != nil {
@@ -414,6 +462,25 @@ func (s *IRCSession) readLoop() {
 
 		line := scanner.Text()
 		s.handleIRCLine(line)
+	}
+}
+
+// pingLoop sends periodic PINGs to keep the connection alive
+func (s *IRCSession) pingLoop() {
+	for {
+		interval := randomDuration(PingInterval, PingJitter)
+		timer := time.NewTimer(interval)
+
+		select {
+		case <-timer.C:
+			if s.GetStatus() == "connected" {
+				s.SendMessage(fmt.Sprintf("PING :%s", s.ID))
+			}
+		case <-s.done:
+			timer.Stop()
+			return
+		}
+		timer.Stop()
 	}
 }
 
@@ -447,8 +514,8 @@ func (s *IRCSession) reconnect() {
 
 		log.Printf("Session %s: reconnecting (attempt %d/%d)...", shortID(s.ID), retry+1, ReconnectMaxRetries)
 
-		// Wait before retry
-		time.Sleep(delay)
+		// Wait before retry with jitter to avoid thundering herd reconnects
+		time.Sleep(randomDuration(delay, ReconnectJitter))
 
 		// Try to dial
 		conn, err := s.dialer.Dial()
@@ -464,33 +531,15 @@ func (s *IRCSession) reconnect() {
 		// Success!
 		s.mu.Lock()
 		s.conn = conn
-		s.status = "connected"
+		s.status = "reconnecting" // Keep as reconnecting until 001 received
 		s.mu.Unlock()
+		s.configureConnection(conn)
 
 		// Re-register
 		s.sendRaw(fmt.Sprintf("NICK %s", s.nick))
 		s.sendRaw(fmt.Sprintf("USER %s 0 * :%s", s.username, s.realname))
 
-		// Rejoin all channels
-		s.mu.RLock()
-		channelNames := make([]string, 0, len(s.channels))
-		for name := range s.channels {
-			channelNames = append(channelNames, name)
-		}
-		s.mu.RUnlock()
-
-		for _, name := range channelNames {
-			s.sendRaw(fmt.Sprintf("JOIN %s", name))
-			ch := s.GetOrCreateChannel(name)
-			ch.AddMessage(ChatMessage{
-				Time:   time.Now(),
-				Prefix: "system",
-				Text:   fmt.Sprintf("Reconnected at %s", time.Now().Format("15:04:05")),
-				Kind:   "system",
-			})
-		}
-
-		log.Printf("Session %s: reconnected successfully", shortID(s.ID))
+		log.Printf("Session %s: connection established, waiting for registration...", shortID(s.ID))
 
 		// Restart read loop
 		go s.readLoop()

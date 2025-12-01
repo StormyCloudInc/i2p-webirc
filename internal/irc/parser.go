@@ -307,9 +307,35 @@ func (s *IRCSession) handleIRCLine(line string) {
 		}
 
 	case "001": // RPL_WELCOME - IRC registration complete
-		// Mark as registered when we receive the first welcome message
+		// Check if we were reconnecting
+		wasReconnecting := s.GetStatus() == "reconnecting"
+
+		// Mark as registered and connected
 		s.setRegistered(true)
+		s.setStatus("connected")
 		log.Printf("Session %s: IRC registration complete", shortID(s.ID))
+
+		// If recovering from a reconnect, rejoin channels now
+		if wasReconnecting {
+			s.mu.RLock()
+			channelNames := make([]string, 0, len(s.channels))
+			for name := range s.channels {
+				channelNames = append(channelNames, name)
+			}
+			s.mu.RUnlock()
+
+			for _, name := range channelNames {
+				s.SendMessage(fmt.Sprintf("JOIN %s", name))
+				ch := s.GetOrCreateChannel(name)
+				ch.AddMessage(ChatMessage{
+					Time:   time.Now(),
+					Prefix: "system",
+					Text:   fmt.Sprintf("Reconnected at %s", time.Now().Format("15:04:05")),
+					Kind:   "system",
+				})
+			}
+			log.Printf("Session %s: reconnected successfully (001 received)", shortID(s.ID))
+		}
 
 	case "002", "003", "004", "005": // Other welcome messages
 		// Server welcome - could log or display

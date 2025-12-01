@@ -493,17 +493,30 @@ func (h *Handler) ChannelHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Get all channels for sidebar
 	allChannels := session.GetAllChannels()
+	serverID := session.GetServerID()
+	server := getServerByID(serverID)
+	var popularChannels []string
+	if server != nil {
+		popularChannels = server.PopularChannels
+	} else {
+		popularChannels = AvailableServers[0].PopularChannels
+	}
+
+	// Get UI state
+	showUsers := r.URL.Query().Get("show_users") == "true"
 
 	data := map[string]interface{}{
-		"Channel":      channel,
-		"Nick":         session.GetNick(),
-		"Status":       session.GetStatus(),
-		"Messages":     messages,
-		"Users":        users,
-		"HideJoinPart": hideJoinPart,
-		"Theme":        theme,
-		"AllChannels":  allChannels,
-		"CSRFToken":    h.GetCSRFToken(r),
+		"Channel":         channel,
+		"Nick":            session.GetNick(),
+		"Status":          session.GetStatus(),
+		"Messages":        messages,
+		"Users":           users,
+		"HideJoinPart":    hideJoinPart,
+		"Theme":           theme,
+		"AllChannels":     allChannels,
+		"PopularChannels": popularChannels,
+		"ShowUsers":       showUsers,
+		"CSRFToken":       h.GetCSRFToken(r),
 	}
 
 	if err := h.templates.ExecuteTemplate(w, "channel.html", data); err != nil {
@@ -514,10 +527,16 @@ func (h *Handler) ChannelHandler(w http.ResponseWriter, r *http.Request) {
 
 // MessagesHandler handles GET /chan/{channel}/messages - iframe for messages only
 func (h *Handler) MessagesHandler(w http.ResponseWriter, r *http.Request) {
+	// Add timeout context to ensure handler responds quickly (8 seconds)
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+	r = r.WithContext(ctx)
+
 	sessionID := h.getOrCreateSessionID(w, r)
 	session := h.sessions.Get(sessionID)
 
 	if session == nil {
+		// Session expired or invalid - redirect to home
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
@@ -546,7 +565,42 @@ func (h *Handler) MessagesHandler(w http.ResponseWriter, r *http.Request) {
 	serverID := session.GetServerID()
 
 	// Get messages with bot history if available
-	messages := h.getMessagesWithHistory(channel, ch, serverID)
+	// Run in goroutine to allow timeout if history lookup is slow
+	messagesChan := make(chan []irc.ChatMessage, 1)
+	errChan := make(chan error, 1)
+	
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				errChan <- fmt.Errorf("panic in getMessagesWithHistory: %v", r)
+			}
+		}()
+		messagesChan <- h.getMessagesWithHistory(channel, ch, serverID)
+	}()
+
+	var messages []irc.ChatMessage
+	select {
+	case messages = <-messagesChan:
+		// Successfully got messages
+	case err := <-errChan:
+		// Error getting messages - use current messages without history
+		log.Printf("Warning: Error getting messages for channel %s: %v, using current messages only", channel, err)
+		messages = ch.GetMessages()
+	case <-ctx.Done():
+		// Timeout - return current messages without history
+		log.Printf("Warning: MessagesHandler timeout for channel %s, returning current messages only", channel)
+		messages = ch.GetMessages()
+	}
+
+	// Check if context was cancelled before proceeding
+	if ctx.Err() != nil {
+		// Context cancelled - send simple error page that will refresh
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><meta http-equiv=\"refresh\" content=\"12\"></head><body>Loading messages...</body></html>")
+		return
+	}
+
 	users := ch.GetUsers()
 	sort.Strings(users)
 
@@ -580,7 +634,10 @@ func (h *Handler) MessagesHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.templates.ExecuteTemplate(w, "messages.html", data); err != nil {
 		log.Printf("Error rendering template: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		// Send a simple error page that will refresh
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><meta http-equiv=\"refresh\" content=\"12\"></head><body>Error loading messages. Refreshing...</body></html>")
 	}
 }
 
@@ -970,8 +1027,12 @@ func (h *Handler) SendHandler(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Redirect back to channel messages (iframe content)
-	http.Redirect(w, r, "/chan/"+url.PathEscape(channel)+"/messages", http.StatusSeeOther)
+	// Redirect back to channel (full page reload to clear input)
+	redirectURL := "/chan/" + url.PathEscape(channel)
+	if showUsers := r.FormValue("show_users"); showUsers != "" {
+		redirectURL += "?show_users=" + showUsers
+	}
+	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
 }
 
 // getPref gets a preference from cookies

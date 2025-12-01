@@ -1,26 +1,94 @@
 {{define "channel.html"}}
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{.Channel}} - I2P WebIRC</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
+<body class="theme-{{.Theme}}">
+    <div class="chat-container">
+        <div class="topbar">
+            <div class="channel-info">
+                <span class="channel-name">{{.Channel}}</span>
+                <span class="user-count">({{len .Users}} users)</span>
+            </div>
+            <div class="status-info">
+                <span class="status status-{{.Status}}">{{.Status}}</span>
+                <span class="nick">{{.Nick}}</span>
+            </div>
+        </div>
 
-<body class="theme-{{.Theme}} has-iframe-container">
-    <div class="iframe-container">
-        <iframe src="/chan/{{urlEscape .Channel}}/messages" class="messages-iframe" name="messages"></iframe>
+        <div class="main-content">
+            <div class="sidebar">
+                <h3>Channels</h3>
+                <ul class="channel-list">
+                    {{range .AllChannels}}
+                    <li class="channel-item{{if eq .Name $.Channel}} active{{end}}">
+                        <a href="/chan/{{urlEscape .Name}}">
+                            {{if .IsDM}}
+                            <span class="dm-icon">@</span>
+                            {{end}}
+                            <span class="channel-name-text">{{.Name}}</span>
+                            {{if .UnreadCount}}
+                            <span class="unread-badge">{{.UnreadCount}}</span>
+                            {{end}}
+                        </a>
+                    </li>
+                    {{else}}
+                    <li class="no-channels">No channels</li>
+                    {{end}}
+                </ul>
 
-        <div class="input-area-fixed">
-            <form method="POST" action="/send" target="messages" onsubmit="setTimeout(function(){document.querySelector('input[name=message]').value='';document.querySelector('input[name=message]').focus();},50)">
-                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-                <input type="hidden" name="channel" value="{{.Channel}}">
-                <input type="text" name="message" placeholder="Type a message or /command..." autocomplete="off"
-                    autofocus>
-                <button type="submit" class="btn btn-send">Send</button>
-            </form>
+                <h3 style="margin-top: 20px;">Popular Channels</h3>
+                <ul class="channel-list popular-channels">
+                    {{range .PopularChannels}}
+                    <li class="channel-item">
+                        <a href="/chan/{{urlEscape .}}">
+                            <span class="channel-name-text">{{.}}</span>
+                        </a>
+                    </li>
+                    {{end}}
+                </ul>
+
+                <div class="sidebar-footer">
+                    {{if .ShowUsers}}
+                    <a href="?show_users=false" class="user-toggle open">
+                        <span class="icon">▼</span> Users ({{len .Users}})
+                    </a>
+                    <ul class="user-list-compact">
+                        {{range .Users}}
+                        <li class="user{{if eq . $.Nick}} current-user{{end}}">{{.}}</li>
+                        {{else}}
+                        <li class="no-users">No users</li>
+                        {{end}}
+                    </ul>
+                    {{else}}
+                    <a href="?show_users=true" class="user-toggle closed">
+                        <span class="icon">▶</span> Users ({{len .Users}})
+                    </a>
+                    {{end}}
+
+                    <div class="settings-link">
+                        <a href="#settings">⚙ Settings</a>
+                    </div>
+                </div>
+            </div>
+
+            <div class="chat-area">
+                <iframe src="/chan/{{urlEscape .Channel}}/messages#bottom" class="messages-iframe" name="messages"></iframe>
+
+                <div class="input-area">
+                    <form method="POST" action="/send" id="message-form">
+                        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                        <input type="hidden" name="channel" value="{{.Channel}}">
+                        <input type="hidden" name="show_users" value="{{.ShowUsers}}">
+                        <input type="text" name="message" id="message-input" placeholder="Type a message or /command..." autocomplete="off" autofocus>
+                        <button type="submit" class="btn btn-send">Send</button>
+                    </form>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -52,12 +120,11 @@
 
                 <div class="setting-actions">
                     <button type="submit" class="btn">Save Settings</button>
-                    <a href="/chan/{{urlEscape .Channel}}" class="btn btn-secondary">Cancel</a>
+                    <a href="#" class="btn btn-secondary">Cancel</a>
                 </div>
             </form>
         </div>
     </div>
 </body>
-
 </html>
 {{end}}

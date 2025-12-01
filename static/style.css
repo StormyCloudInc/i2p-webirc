@@ -628,7 +628,7 @@ body.messages-frame {
 .messages-wrapper {
     display: flex;
     flex-direction: column;
-    min-height: 100%;
+    min-height: min-content;
     justify-content: flex-end;
 }
 
