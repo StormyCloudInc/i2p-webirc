@@ -24,8 +24,27 @@ func (h *Handler) SecurityHeadersMiddleware(next http.Handler) http.Handler {
 		// Add X-Frame-Options for older browsers
 		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 
+		// Prevent caching of HTML pages to avoid stale CSRF tokens
+		// Static files (.css, .ico, etc.) can still be cached
+		if !isStaticFile(r.URL.Path) {
+			w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+			w.Header().Set("Pragma", "no-cache")
+			w.Header().Set("Expires", "0")
+		}
+
 		next.ServeHTTP(w, r)
 	})
+}
+
+// isStaticFile checks if the request is for a static file that can be cached
+func isStaticFile(path string) bool {
+	staticExtensions := []string{".css", ".ico", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".woff", ".woff2"}
+	for _, ext := range staticExtensions {
+		if len(path) > len(ext) && path[len(path)-len(ext):] == ext {
+			return true
+		}
+	}
+	return false
 }
 
 // generateCSRFToken creates a CSRF token bound to the session ID using HMAC

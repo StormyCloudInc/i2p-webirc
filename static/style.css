@@ -557,6 +557,30 @@ body.messages-frame {
     background: var(--bg-hover);
 }
 
+/* User toggle link */
+.user-toggle {
+    display: block;
+    padding: 0.5rem 0.75rem;
+    border-radius: var(--radius-md);
+    font-weight: 500;
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+    transition: background-color 0.2s, color 0.2s;
+}
+
+.user-toggle:hover {
+    background: var(--bg-hover);
+    color: var(--text-main);
+}
+
+.user-toggle .icon {
+    display: inline-block;
+    width: 1rem;
+    font-size: 0.7rem;
+    color: var(--primary-color);
+}
+
 .user-list-compact {
     list-style: none;
     margin-top: 0.5rem;
@@ -617,19 +641,22 @@ body.messages-frame {
 
 .messages {
     flex: 1;
-    overflow-y: auto;
+    overflow-y: scroll;
     padding: 1.5rem;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
 }
 
-/* Wrapper to push messages to bottom and auto-scroll */
+/* Wrapper pushes messages to bottom when content is short */
 .messages-wrapper {
     display: flex;
     flex-direction: column;
-    min-height: min-content;
-    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: auto; /* Pushes content to bottom */
+}
+
+#bottom {
+    height: 1px;
 }
 
 .message {

@@ -19,10 +19,10 @@ const (
 	ReconnectMaxDelay    = 5 * time.Minute  // Allow more time for I2P tunnels to recover
 	ReconnectHTTPTimeout = 10 * time.Minute // Stop reconnecting if no HTTP activity for this long
 
-	PingInterval    = 30 * time.Second
-	PingJitter      = 15 * time.Second
-	KeepAlivePeriod = 2 * time.Minute
-	ReadDeadline    = 2 * time.Minute
+	PingInterval    = 90 * time.Second // Conservative for I2P latency
+	PingJitter      = 30 * time.Second
+	KeepAlivePeriod = 4 * time.Minute  // Conservative for I2P latency
+	ReadDeadline    = 5 * time.Minute  // Conservative for I2P latency
 	WriteDeadline   = 30 * time.Second
 	ReconnectJitter = 2 * time.Second
 )
