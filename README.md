@@ -2,6 +2,12 @@
 
 A JavaScript-free web IRC client for the I2P network using SAMv3. Features multi-channel support, direct messages, channel history bots, and a retro terminal interface with no client-side JavaScript required.
 
+<div align="center">
+
+### 🌐 **[Try it live at https://irc.i2p.net](https://irc.i2p.net)**
+
+</div>
+
 ## Features
 
 - **Zero JavaScript**: Pure HTML/CSS with auto-refresh using iframes and meta tags
