@@ -21,8 +21,8 @@ const (
 
 	PingInterval    = 90 * time.Second // Conservative for I2P latency
 	PingJitter      = 30 * time.Second
-	KeepAlivePeriod = 4 * time.Minute  // Conservative for I2P latency
-	ReadDeadline    = 5 * time.Minute  // Conservative for I2P latency
+	KeepAlivePeriod = 4 * time.Minute // Conservative for I2P latency
+	ReadDeadline    = 5 * time.Minute // Conservative for I2P latency
 	WriteDeadline   = 30 * time.Second
 	ReconnectJitter = 2 * time.Second
 )
@@ -54,6 +54,10 @@ type ChannelState struct {
 	messages      []ChatMessage
 	users         map[string]bool
 	historyLoaded bool
+	joined        bool
+	joinPending   bool
+	joinError     string
+	created       time.Time
 }
 
 // AddMessage adds a message to the channel's ring buffer
@@ -143,6 +147,7 @@ type IRCSession struct {
 	realname string
 	serverID string // which server this session is connected to ("postman", "simp")
 
+	writeMu      sync.Mutex
 	mu           sync.RWMutex
 	channels     map[string]*ChannelState
 	lastSeenTime map[string]time.Time // tracks when each channel was last viewed
@@ -166,7 +171,7 @@ func NewIRCSession(id string, dialer IRCDialer, nick, username, realname string)
 		realname:     realname,
 		channels:     make(map[string]*ChannelState),
 		lastSeenTime: make(map[string]time.Time),
-		status:       "disconnected",
+		status:       "connecting",
 		lastHTTP:     time.Now(),
 		outgoing:     make(chan string, 100),
 		done:         make(chan struct{}),
@@ -175,21 +180,38 @@ func NewIRCSession(id string, dialer IRCDialer, nick, username, realname string)
 
 // Start initiates the IRC connection and starts read/write loops
 func (s *IRCSession) Start() error {
+	go s.registrationTimeout(2 * time.Minute)
+	if s.Closed() {
+		return fmt.Errorf("session closed")
+	}
 	conn, err := s.dialer.Dial()
 	if err != nil {
-		s.setStatus("failed")
+		s.Fail("Unable to establish the IRC connection")
 		return err
 	}
 
 	s.mu.Lock()
+	select {
+	case <-s.done:
+		s.mu.Unlock()
+		conn.Close()
+		return fmt.Errorf("session closed")
+	default:
+	}
 	s.conn = conn
 	s.status = "connected"
 	s.mu.Unlock()
 	s.configureConnection(conn)
 
 	// Send initial IRC registration
-	s.sendRaw(fmt.Sprintf("NICK %s", s.nick))
-	s.sendRaw(fmt.Sprintf("USER %s 0 * :%s", s.username, s.realname))
+	if err := s.sendRaw(fmt.Sprintf("NICK %s", s.GetNick())); err != nil {
+		s.Fail("Could not register with IRC server")
+		return err
+	}
+	if err := s.sendRaw(fmt.Sprintf("USER %s 0 * :%s", s.username, s.realname)); err != nil {
+		s.Fail("Could not register with IRC server")
+		return err
+	}
 
 	// Start goroutines
 	go s.writeLoop()
@@ -207,7 +229,8 @@ func (s *IRCSession) GetOrCreateChannel(name string) *ChannelState {
 	name = strings.ToLower(name)
 	if s.channels[name] == nil {
 		s.channels[name] = &ChannelState{
-			users: make(map[string]bool),
+			users:   make(map[string]bool),
+			created: time.Now(),
 		}
 	}
 	return s.channels[name]
@@ -231,6 +254,9 @@ func (s *IRCSession) GetStatus() string {
 func (s *IRCSession) setStatus(status string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.Closed() && status != "failed" && status != "disconnected" {
+		return
+	}
 	s.status = status
 }
 
@@ -244,6 +270,9 @@ func (s *IRCSession) GetRegistered() bool {
 func (s *IRCSession) setRegistered(registered bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if registered && s.Closed() {
+		return
+	}
 	s.registered = registered
 }
 
@@ -346,10 +375,13 @@ type ChannelInfo struct {
 // GetAllChannels returns all channels with metadata
 func (s *IRCSession) GetAllChannels() []ChannelInfo {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	channels := make([]ChannelInfo, 0, len(s.channels))
+	names := make([]string, 0, len(s.channels))
 	for name := range s.channels {
+		names = append(names, name)
+	}
+	s.mu.RUnlock()
+	channels := make([]ChannelInfo, 0, len(names))
+	for _, name := range names {
 		isDM := !strings.HasPrefix(name, "#")
 		channels = append(channels, ChannelInfo{
 			Name:        name,
@@ -371,6 +403,9 @@ func (s *IRCSession) GetAllChannels() []ChannelInfo {
 
 // SendMessage queues a message to be sent to IRC
 func (s *IRCSession) SendMessage(msg string) {
+	if s.Closed() || strings.ContainsAny(msg, "\r\n\x00") || len(msg) > 510 {
+		return
+	}
 	select {
 	case s.outgoing <- msg:
 	case <-s.done:
@@ -381,6 +416,11 @@ func (s *IRCSession) SendMessage(msg string) {
 
 // sendRaw sends a raw message immediately (used internally)
 func (s *IRCSession) sendRaw(msg string) error {
+	if strings.ContainsAny(msg, "\r\n\x00") || len(msg) > 510 {
+		return fmt.Errorf("invalid IRC line")
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	s.mu.RLock()
 	conn := s.conn
 	s.mu.RUnlock()
@@ -429,8 +469,12 @@ func (s *IRCSession) writeLoop() {
 		case msg := <-s.outgoing:
 			if err := s.sendRaw(msg); err != nil {
 				log.Printf("Session %s: write error: %v", shortID(s.ID), err)
-				s.Close() // Close connection to trigger reconnect in readLoop
-				return
+				s.mu.RLock()
+				conn := s.conn
+				s.mu.RUnlock()
+				if conn != nil {
+					conn.Close()
+				}
 			}
 		case <-s.done:
 			return
@@ -440,7 +484,12 @@ func (s *IRCSession) writeLoop() {
 
 // readLoop handles incoming messages and reconnection
 func (s *IRCSession) readLoop() {
+	s.mu.RLock()
 	conn := s.conn
+	s.mu.RUnlock()
+	if conn == nil {
+		return
+	}
 	scanner := bufio.NewScanner(conn)
 
 	for {
@@ -487,8 +536,18 @@ func (s *IRCSession) pingLoop() {
 // reconnect attempts to reconnect with exponential backoff
 // It will abort if the user hasn't made any HTTP requests recently
 func (s *IRCSession) reconnect() {
+	if s.Closed() {
+		return
+	}
 	s.setStatus("reconnecting")
 	s.setRegistered(false)
+	for _, ch := range s.channelStates() {
+		ch.mu.Lock()
+		ch.joined = false
+		ch.joinPending = false
+		ch.users = make(map[string]bool)
+		ch.mu.Unlock()
+	}
 
 	// Close old connection
 	s.mu.Lock()
@@ -515,7 +574,11 @@ func (s *IRCSession) reconnect() {
 		log.Printf("Session %s: reconnecting (attempt %d/%d)...", shortID(s.ID), retry+1, ReconnectMaxRetries)
 
 		// Wait before retry with jitter to avoid thundering herd reconnects
-		time.Sleep(randomDuration(delay, ReconnectJitter))
+		select {
+		case <-time.After(randomDuration(delay, ReconnectJitter)):
+		case <-s.done:
+			return
+		}
 
 		// Try to dial
 		conn, err := s.dialer.Dial()
@@ -530,13 +593,20 @@ func (s *IRCSession) reconnect() {
 
 		// Success!
 		s.mu.Lock()
+		select {
+		case <-s.done:
+			s.mu.Unlock()
+			conn.Close()
+			return
+		default:
+		}
 		s.conn = conn
 		s.status = "reconnecting" // Keep as reconnecting until 001 received
 		s.mu.Unlock()
 		s.configureConnection(conn)
 
 		// Re-register
-		s.sendRaw(fmt.Sprintf("NICK %s", s.nick))
+		s.sendRaw(fmt.Sprintf("NICK %s", s.GetNick()))
 		s.sendRaw(fmt.Sprintf("USER %s 0 * :%s", s.username, s.realname))
 
 		log.Printf("Session %s: connection established, waiting for registration...", shortID(s.ID))
@@ -555,6 +625,10 @@ func (s *IRCSession) reconnect() {
 func (s *IRCSession) Close() {
 	s.closeOnce.Do(func() {
 		close(s.done)
+		s.setRegistered(false)
+		if s.GetStatus() != "failed" {
+			s.setStatus("disconnected")
+		}
 
 		// Run cleanup in goroutine to avoid blocking
 		go func() {
@@ -564,10 +638,12 @@ func (s *IRCSession) Close() {
 			s.mu.Unlock()
 
 			if conn != nil {
+				s.writeMu.Lock()
 				// Set a short deadline so QUIT doesn't block forever
 				conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 				conn.Write([]byte("QUIT :Leaving\r\n"))
 				conn.Close()
+				s.writeMu.Unlock()
 			}
 
 			if s.dialer != nil {
@@ -628,4 +704,112 @@ func (ss *SessionStore) Count() int {
 	ss.mu.RLock()
 	defer ss.mu.RUnlock()
 	return len(ss.data)
+}
+
+func (s *IRCSession) Closed() bool {
+	select {
+	case <-s.done:
+		return true
+	default:
+		return false
+	}
+}
+func (s *IRCSession) channelStates() []*ChannelState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []*ChannelState
+	for _, ch := range s.channels {
+		out = append(out, ch)
+	}
+	return out
+}
+func (c *ChannelState) HasUser(nick string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.users[nick]
+}
+func (c *ChannelState) Joined() bool { c.mu.RLock(); defer c.mu.RUnlock(); return c.joined }
+func (c *ChannelState) SetJoined(joined bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.joined = joined
+	c.joinPending = false
+}
+func (s *IRCSession) JoinChannel(name string) {
+	if !s.GetRegistered() || !strings.HasPrefix(name, "#") {
+		return
+	}
+	c := s.GetOrCreateChannel(name)
+	c.mu.Lock()
+	if c.joined || c.joinPending || c.joinError != "" {
+		c.mu.Unlock()
+		return
+	}
+	c.joinPending = true
+	c.mu.Unlock()
+	s.SendMessage(fmt.Sprintf("JOIN %s", name))
+}
+func (s *IRCSession) RemoveChannel(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.channels, strings.ToLower(name))
+	delete(s.lastSeenTime, strings.ToLower(name))
+}
+func (s *IRCSession) Fail(reason string) {
+	s.setStatus("failed")
+	c := s.GetOrCreateChannel(s.GetCurrentChannel())
+	c.AddMessage(ChatMessage{Time: time.Now(), Prefix: "server", Text: reason, Kind: "system"})
+	s.Close()
+}
+
+// ImportHistory is atomic with live arrivals and concurrent iframe requests.
+func (c *ChannelState) ImportHistory(history []ChatMessage) []ChatMessage {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.historyLoaded && c.joined && len(history) > 0 {
+		var before []ChatMessage
+		for _, msg := range history {
+			if msg.Time.Before(c.created) {
+				before = append(before, msg)
+			}
+		}
+		c.messages = append(before, c.messages...)
+		sort.SliceStable(c.messages, func(i, j int) bool { return c.messages[i].Time.Before(c.messages[j].Time) })
+		if len(c.messages) > MaxMessages {
+			c.messages = c.messages[len(c.messages)-MaxMessages:]
+		}
+		c.historyLoaded = true
+	}
+	return append([]ChatMessage(nil), c.messages...)
+}
+
+func (s *IRCSession) registrationTimeout(timeout time.Duration) {
+	select {
+	case <-s.done:
+		return
+	case <-time.After(timeout):
+		if !s.GetRegistered() {
+			s.Fail("IRC registration timed out. Please try again.")
+		}
+	}
+}
+
+func (c *ChannelState) JoinError() string { c.mu.RLock(); defer c.mu.RUnlock(); return c.joinError }
+func (c *ChannelState) SetJoinError(reason string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.joinError = reason
+	c.joinPending = false
+	c.joined = false
+}
+
+// DeleteIfCurrent prevents cleanup snapshots from deleting a replacement session.
+func (ss *SessionStore) DeleteIfCurrent(id string, session *IRCSession) bool {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if ss.data[id] != session {
+		return false
+	}
+	delete(ss.data, id)
+	return true
 }

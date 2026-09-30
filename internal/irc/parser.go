@@ -86,7 +86,7 @@ func (s *IRCSession) handleIRCLine(line string) {
 
 			// For DMs (target is our nick), store under sender's nick instead
 			channelName := target
-			if target == s.GetNick() {
+			if strings.EqualFold(target, s.GetNick()) {
 				channelName = nick
 			}
 
@@ -108,7 +108,7 @@ func (s *IRCSession) handleIRCLine(line string) {
 
 			// For DMs (target is our nick), store under sender's nick instead
 			channelName := target
-			if target == s.GetNick() {
+			if strings.EqualFold(target, s.GetNick()) {
 				channelName = nick
 			}
 
@@ -129,6 +129,9 @@ func (s *IRCSession) handleIRCLine(line string) {
 
 			ch := s.GetOrCreateChannel(channel)
 			ch.AddUser(nick)
+			if strings.EqualFold(nick, s.GetNick()) {
+				ch.SetJoined(true)
+			}
 
 			// Only show join messages for other users
 			if nick != s.GetNick() {
@@ -154,6 +157,9 @@ func (s *IRCSession) handleIRCLine(line string) {
 			ch := s.GetChannel(channel)
 			if ch != nil {
 				ch.RemoveUser(nick)
+				if strings.EqualFold(nick, s.GetNick()) {
+					s.RemoveChannel(channel)
+				}
 				text := "left"
 				if reason != "" {
 					text = fmt.Sprintf("left (%s)", reason)
@@ -189,7 +195,7 @@ func (s *IRCSession) handleIRCLine(line string) {
 		}
 
 		for _, ch := range channels {
-			if ch.users[nick] {
+			if ch.HasUser(nick) {
 				ch.RemoveUser(nick)
 				ch.AddMessage(ChatMessage{
 					Time:   time.Now(),
@@ -207,7 +213,7 @@ func (s *IRCSession) handleIRCLine(line string) {
 			newNick := msg.Params[0]
 
 			// Update own nick if it's us
-			if oldNick == s.GetNick() {
+			if strings.EqualFold(oldNick, s.GetNick()) {
 				s.SetNick(newNick)
 			}
 
@@ -220,7 +226,7 @@ func (s *IRCSession) handleIRCLine(line string) {
 			s.mu.RUnlock()
 
 			for _, ch := range channels {
-				if ch.users[oldNick] {
+				if ch.HasUser(oldNick) {
 					ch.RenameUser(oldNick, newNick)
 					ch.AddMessage(ChatMessage{
 						Time:   time.Now(),
@@ -311,6 +317,9 @@ func (s *IRCSession) handleIRCLine(line string) {
 		wasReconnecting := s.GetStatus() == "reconnecting"
 
 		// Mark as registered and connected
+		if len(msg.Params) > 0 {
+			s.SetNick(msg.Params[0])
+		}
 		s.setRegistered(true)
 		s.setStatus("connected")
 		log.Printf("Session %s: IRC registration complete", shortID(s.ID))
@@ -320,12 +329,14 @@ func (s *IRCSession) handleIRCLine(line string) {
 			s.mu.RLock()
 			channelNames := make([]string, 0, len(s.channels))
 			for name := range s.channels {
-				channelNames = append(channelNames, name)
+				if strings.HasPrefix(name, "#") {
+					channelNames = append(channelNames, name)
+				}
 			}
 			s.mu.RUnlock()
 
 			for _, name := range channelNames {
-				s.SendMessage(fmt.Sprintf("JOIN %s", name))
+				s.JoinChannel(name)
 				ch := s.GetOrCreateChannel(name)
 				ch.AddMessage(ChatMessage{
 					Time:   time.Now(),
@@ -337,6 +348,22 @@ func (s *IRCSession) handleIRCLine(line string) {
 			log.Printf("Session %s: reconnected successfully (001 received)", shortID(s.ID))
 		}
 
+	case "432", "433", "436", "437", "464", "465", "ERROR":
+		reason := "IRC server rejected registration"
+		if len(msg.Params) > 0 {
+			reason = msg.Params[len(msg.Params)-1]
+		}
+		if !s.GetRegistered() || msg.Command == "ERROR" {
+			s.Fail(reason)
+		} else {
+			s.GetOrCreateChannel(s.GetCurrentChannel()).AddMessage(ChatMessage{Time: time.Now(), Prefix: "server", Text: reason, Kind: "system"})
+		}
+	case "403", "405", "471", "473", "474", "475", "476", "477":
+		if len(msg.Params) > 1 {
+			ch := s.GetOrCreateChannel(msg.Params[1])
+			ch.SetJoinError(msg.Params[len(msg.Params)-1])
+			ch.AddMessage(ChatMessage{Time: time.Now(), Prefix: "server", Text: msg.Params[len(msg.Params)-1], Kind: "system"})
+		}
 	case "002", "003", "004", "005": // Other welcome messages
 		// Server welcome - could log or display
 		log.Printf("Session %s: %s", shortID(s.ID), msg.Raw)

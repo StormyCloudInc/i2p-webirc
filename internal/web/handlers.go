@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dustinfields/i2p-irc/internal/bot"
@@ -102,6 +103,7 @@ func DefaultDialerFactory() DialerFactory {
 
 // Handler holds the HTTP handler state
 type Handler struct {
+	joinMu        sync.Mutex
 	config        Config
 	sessions      *irc.SessionStore
 	templates     *template.Template
@@ -211,53 +213,25 @@ func generateDefaultNick() string {
 
 // getMessagesWithHistory gets channel messages, prepending bot history if available and channel is new
 func (h *Handler) getMessagesWithHistory(channel string, ch *irc.ChannelState, serverID string) []irc.ChatMessage {
-	// If history already loaded for this channel, just return current messages
-	if ch.IsHistoryLoaded() {
+	if !ch.Joined() || ch.IsHistoryLoaded() || !strings.HasPrefix(channel, "#") {
 		return ch.GetMessages()
 	}
-
-	// Mark history as loaded (even if we don't find any, to avoid repeated lookups)
-	ch.SetHistoryLoaded()
-
-	// Get the history bot for this server
 	historyBot := h.getHistoryBot(serverID)
-
-	// If no bot or channel doesn't start with #, return messages as-is
-	if historyBot == nil || !strings.HasPrefix(channel, "#") {
+	if historyBot == nil {
 		return ch.GetMessages()
 	}
-
-	// Get bot history for this channel
-	botHistory := historyBot.GetHistory(channel, 10)
-	if len(botHistory) == 0 {
-		return ch.GetMessages()
-	}
-
-	// Convert bot messages to IRC ChatMessages and add them to channel state
-	// Add in reverse order so oldest messages appear first
-	for i := len(botHistory) - 1; i >= 0; i-- {
-		msg := botHistory[i]
-
-		// Skip join/part events - users can see these from current activity
+	var history []irc.ChatMessage
+	for _, msg := range historyBot.GetHistory(channel, 10) {
 		if msg.Type == "join" || msg.Type == "part" {
 			continue
 		}
-
 		kind := "privmsg"
 		if msg.Type == "action" {
 			kind = "action"
 		}
-
-		// Add to channel message buffer
-		ch.AddMessage(irc.ChatMessage{
-			Time:   msg.Timestamp,
-			Prefix: msg.Nick,
-			Text:   msg.Content,
-			Kind:   kind,
-		})
+		history = append(history, irc.ChatMessage{Time: msg.Timestamp, Prefix: msg.Nick, Text: msg.Content, Kind: kind})
 	}
-
-	return ch.GetMessages()
+	return ch.ImportHistory(history)
 }
 
 // getSessionIDFromContext retrieves the session ID from request context (set by SessionMiddleware)
@@ -283,7 +257,7 @@ func (h *Handler) getOrCreateSessionID(w http.ResponseWriter, r *http.Request) s
 
 	// Check cookie
 	cookie, err := r.Cookie(SessionCookieName)
-	if err == nil && cookie.Value != "" {
+	if err == nil && validSessionID(cookie.Value) {
 		return cookie.Value
 	}
 
@@ -326,6 +300,7 @@ func (h *Handler) IndexHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if session != nil {
+		data["DefaultNick"] = session.GetNick()
 		session.UpdateLastHTTP()
 		lastChan := session.GetCurrentChannel()
 		if lastChan != "" {
@@ -345,6 +320,8 @@ func (h *Handler) IndexHandler(w http.ResponseWriter, r *http.Request) {
 
 // JoinHandler handles POST /join
 func (h *Handler) JoinHandler(w http.ResponseWriter, r *http.Request) {
+	h.joinMu.Lock()
+	defer h.joinMu.Unlock()
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -372,9 +349,14 @@ func (h *Handler) JoinHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use defaults if validation failed
+	// Reject invalid supplied input rather than silently changing identity.
 	if nick == "" {
-		nick = generateDefaultNick()
+		h.joinError(w, r, "Nickname must start with a letter and contain at most 30 IRC nickname characters.")
+		return
+	}
+	if strings.TrimSpace(r.FormValue("channel")) != "" && channel == "" {
+		h.joinError(w, r, "Invalid channel name.")
+		return
 	}
 	if channel == "" {
 		channel = server.DefaultChannel
@@ -384,7 +366,7 @@ func (h *Handler) JoinHandler(w http.ResponseWriter, r *http.Request) {
 	session := h.sessions.Get(sessionID)
 
 	// If existing session is for a different server, close it
-	if session != nil && session.GetServerID() != "" && session.GetServerID() != serverID {
+	if session != nil && (session.GetServerID() != serverID || session.Closed() || session.GetStatus() == "failed" || session.GetStatus() == "abandoned") {
 		log.Printf("Session %s switching servers from %s to %s, closing old session",
 			sessionID[:8], session.GetServerID(), serverID)
 		session.Close()
@@ -412,16 +394,17 @@ func (h *Handler) JoinHandler(w http.ResponseWriter, r *http.Request) {
 		// Create new session with selected server using the dialer factory
 		dialer := h.dialerFactory(h.config.SAMAddress, server.Address, sessionID)
 
-		session = irc.NewIRCSession(sessionID, dialer, nick, nick, "WebIRC User")
+		session = irc.NewIRCSession(sessionID, dialer, nick, "webirc", "WebIRC User")
 		session.SetServerID(serverID)
 		h.sessions.Set(sessionID, session)
 
-		// Start the IRC connection (non-blocking)
-		if err := session.Start(); err != nil {
-			log.Printf("Failed to start IRC session: %v", err)
-			http.Error(w, "Failed to connect to IRC", http.StatusInternalServerError)
-			return
-		}
+		// Publish the session before dialing, so duplicate submissions share it.
+		session.SetCurrentChannel(channel)
+		go func() {
+			if err := session.Start(); err != nil {
+				session.Fail("Unable to connect to IRC. Please try again.")
+			}
+		}()
 
 		log.Printf("Started IRC session %s to %s (%s), redirecting to connecting page",
 			sessionID[:8], server.Name, server.Address)
@@ -429,10 +412,13 @@ func (h *Handler) JoinHandler(w http.ResponseWriter, r *http.Request) {
 
 	session.UpdateLastHTTP()
 	session.SetCurrentChannel(channel)
+	if ch := session.GetChannel(channel); ch != nil {
+		ch.SetJoinError("")
+	}
 
 	// If already registered, join the channel and go directly to chat
 	if session.GetRegistered() {
-		session.SendMessage(fmt.Sprintf("JOIN %s", channel))
+		session.JoinChannel(channel)
 		http.Redirect(w, r, "/chan/"+url.PathEscape(channel), http.StatusSeeOther)
 		return
 	}
@@ -456,7 +442,11 @@ func (h *Handler) ChannelHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Extract channel from path
 	channel := strings.TrimPrefix(r.URL.Path, "/chan/")
-	channel, _ = url.PathUnescape(channel)
+	// net/http has already decoded URL.Path.
+	if !validTarget(channel) {
+		http.Error(w, "Invalid channel or nickname", http.StatusBadRequest)
+		return
+	}
 
 	if channel == "" {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -474,11 +464,10 @@ func (h *Handler) ChannelHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Auto-join channel if not already joined (only for # channels)
 	if strings.HasPrefix(channel, "#") && session.GetRegistered() {
-		users := ch.GetUsers()
 		// If no users yet, we probably haven't joined - send JOIN command
-		if len(users) == 0 {
+		if !ch.Joined() {
 			log.Printf("Session %s auto-joining %s", sessionID[:8], channel)
-			session.SendMessage(fmt.Sprintf("JOIN %s", channel))
+			session.JoinChannel(channel)
 		}
 	}
 
@@ -510,6 +499,7 @@ func (h *Handler) ChannelHandler(w http.ResponseWriter, r *http.Request) {
 		"Nick":            session.GetNick(),
 		"Status":          session.GetStatus(),
 		"Messages":        messages,
+		"Refresh":         time.Now().UnixNano(),
 		"Users":           users,
 		"HideJoinPart":    hideJoinPart,
 		"Theme":           theme,
@@ -527,10 +517,6 @@ func (h *Handler) ChannelHandler(w http.ResponseWriter, r *http.Request) {
 
 // MessagesHandler handles GET /chan/{channel}/messages - iframe for messages only
 func (h *Handler) MessagesHandler(w http.ResponseWriter, r *http.Request) {
-	// Add timeout context to ensure handler responds quickly (8 seconds)
-	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
-	defer cancel()
-	r = r.WithContext(ctx)
 
 	sessionID := h.getOrCreateSessionID(w, r)
 	session := h.sessions.Get(sessionID)
@@ -546,7 +532,11 @@ func (h *Handler) MessagesHandler(w http.ResponseWriter, r *http.Request) {
 	// Extract channel from path
 	channel := strings.TrimPrefix(r.URL.Path, "/chan/")
 	channel = strings.TrimSuffix(channel, "/messages")
-	channel, _ = url.PathUnescape(channel)
+	// net/http has already decoded URL.Path.
+	if !validTarget(channel) {
+		http.Error(w, "Invalid channel or nickname", http.StatusBadRequest)
+		return
+	}
 
 	if channel == "" {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -564,42 +554,7 @@ func (h *Handler) MessagesHandler(w http.ResponseWriter, r *http.Request) {
 	// Get server ID for this session
 	serverID := session.GetServerID()
 
-	// Get messages with bot history if available
-	// Run in goroutine to allow timeout if history lookup is slow
-	messagesChan := make(chan []irc.ChatMessage, 1)
-	errChan := make(chan error, 1)
-	
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				errChan <- fmt.Errorf("panic in getMessagesWithHistory: %v", r)
-			}
-		}()
-		messagesChan <- h.getMessagesWithHistory(channel, ch, serverID)
-	}()
-
-	var messages []irc.ChatMessage
-	select {
-	case messages = <-messagesChan:
-		// Successfully got messages
-	case err := <-errChan:
-		// Error getting messages - use current messages without history
-		log.Printf("Warning: Error getting messages for channel %s: %v, using current messages only", channel, err)
-		messages = ch.GetMessages()
-	case <-ctx.Done():
-		// Timeout - return current messages without history
-		log.Printf("Warning: MessagesHandler timeout for channel %s, returning current messages only", channel)
-		messages = ch.GetMessages()
-	}
-
-	// Check if context was cancelled before proceeding
-	if ctx.Err() != nil {
-		// Context cancelled - send simple error page that will refresh
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><meta http-equiv=\"refresh\" content=\"12\"></head><body>Loading messages...</body></html>")
-		return
-	}
+	messages := h.getMessagesWithHistory(channel, ch, serverID)
 
 	users := ch.GetUsers()
 	sort.Strings(users)
@@ -624,6 +579,7 @@ func (h *Handler) MessagesHandler(w http.ResponseWriter, r *http.Request) {
 		"Nick":            session.GetNick(),
 		"Status":          session.GetStatus(),
 		"Messages":        messages,
+		"Refresh":         time.Now().UnixNano(),
 		"Users":           users,
 		"HideJoinPart":    hideJoinPart,
 		"Theme":           theme,
@@ -658,6 +614,10 @@ func (h *Handler) ConnectingHandler(w http.ResponseWriter, r *http.Request) {
 	if channel == "" {
 		channel = session.GetCurrentChannel()
 	}
+	if channel != "" && !isValidChannel(channel) {
+		http.Error(w, "Invalid channel", http.StatusBadRequest)
+		return
+	}
 	if channel == "" {
 		// Use server-specific default channel
 		serverID := session.GetServerID()
@@ -675,9 +635,8 @@ func (h *Handler) ConnectingHandler(w http.ResponseWriter, r *http.Request) {
 		ch := session.GetChannel(channel)
 		if ch != nil {
 			users := ch.GetUsers()
-			messages := ch.GetMessages()
 			// If we have users or messages, the channel is ready
-			if len(users) > 0 || len(messages) > 0 {
+			if ch.Joined() {
 				log.Printf("Session %s ready, channel %s has %d users, redirecting", sessionID[:8], channel, len(users))
 				http.Redirect(w, r, "/chan/"+url.PathEscape(channel), http.StatusSeeOther)
 				return
@@ -686,7 +645,7 @@ func (h *Handler) ConnectingHandler(w http.ResponseWriter, r *http.Request) {
 
 		// Registered but haven't joined yet - send JOIN command
 		log.Printf("Session %s registered, sending JOIN for %s", sessionID[:8], channel)
-		session.SendMessage(fmt.Sprintf("JOIN %s", channel))
+		session.JoinChannel(channel)
 		// Continue showing connecting page, will redirect on next refresh when users arrive
 	}
 
@@ -695,6 +654,7 @@ func (h *Handler) ConnectingHandler(w http.ResponseWriter, r *http.Request) {
 	data := map[string]interface{}{
 		"Status":     session.GetStatus(),
 		"Registered": session.GetRegistered(),
+		"Error":      connectionError(session, channel),
 		"Nick":       session.GetNick(),
 		"Channel":    channel,
 		"Theme":      theme,
@@ -900,6 +860,14 @@ func (h *Handler) SendHandler(w http.ResponseWriter, r *http.Request) {
 
 	channel := r.FormValue("channel")
 	message := strings.TrimSpace(r.FormValue("message"))
+	if !validTarget(channel) || strings.ContainsAny(message, "\r\n\x00") {
+		http.Error(w, "Invalid message or target", http.StatusBadRequest)
+		return
+	}
+	if !session.GetRegistered() || session.Closed() {
+		http.Error(w, "Not connected. Return home to reconnect.", http.StatusConflict)
+		return
+	}
 
 	if message == "" {
 		// Empty message, just redirect back
@@ -931,7 +899,7 @@ func (h *Handler) SendHandler(w http.ResponseWriter, r *http.Request) {
 					})
 				} else {
 					session.SendMessage(fmt.Sprintf("NICK %s", newNick))
-					session.SetNick(newNick)
+					// Wait for the server NICK acknowledgement before changing local identity.
 				}
 			}
 
@@ -947,14 +915,19 @@ func (h *Handler) SendHandler(w http.ResponseWriter, r *http.Request) {
 						Kind:   "system",
 					})
 				} else {
-					session.SendMessage(fmt.Sprintf("JOIN %s", newChannel))
+					session.JoinChannel(newChannel)
 					// Redirect to the messages view of the new channel (stays in iframe)
 					// User can click the channel in sidebar to fully switch (uses target="_parent")
-					http.Redirect(w, r, "/chan/"+url.PathEscape(newChannel)+"/messages", http.StatusSeeOther)
+					http.Redirect(w, r, "/connecting?channel="+url.QueryEscape(newChannel), http.StatusSeeOther)
 					return
 				}
 			}
 
+		case "/quit":
+			session.Close()
+			h.sessions.Delete(sessionID)
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
 		case "/part", "/leave":
 			session.SendMessage(fmt.Sprintf("PART %s", channel))
 			http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -967,6 +940,10 @@ func (h *Handler) SendHandler(w http.ResponseWriter, r *http.Request) {
 			// Handle /msg NICKNAME MESSAGE - send DM and switch to DM view
 			if len(parts) >= 3 {
 				targetNick := parts[1]
+				if !isValidNick(targetNick) {
+					http.Error(w, "Invalid nickname", http.StatusBadRequest)
+					return
+				}
 				dmText := strings.TrimPrefix(message, parts[0]+" "+parts[1]+" ")
 
 				// Send the message
@@ -1067,7 +1044,7 @@ func (h *Handler) setPref(w http.ResponseWriter, name, value string) {
 		Path:     "/",
 		MaxAge:   86400 * 365, // 1 year
 		HttpOnly: true,
-		Secure:   true, // Enforce secure cookies
+		Secure:   false, // Preferences contain no secrets; work on local HTTP too
 		SameSite: http.SameSiteLaxMode,
 	})
 }
@@ -1100,9 +1077,57 @@ func (h *Handler) SettingsHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Redirect back to channel
 	channel := r.FormValue("channel")
+	if channel != "" && !validTarget(channel) {
+		http.Error(w, "Invalid channel", http.StatusBadRequest)
+		return
+	}
 	if channel != "" {
 		http.Redirect(w, r, "/chan/"+url.PathEscape(channel), http.StatusSeeOther)
 	} else {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	}
+}
+
+func validTarget(name string) bool { return isValidChannel(name) || isValidNick(name) }
+func connectionError(s *irc.IRCSession, channel string) string {
+	if c := s.GetChannel(channel); c != nil && c.JoinError() != "" {
+		return c.JoinError()
+	}
+	if s.GetStatus() != "failed" {
+		return ""
+	}
+	if c := s.GetChannel(channel); c != nil {
+		msgs := c.GetMessages()
+		if len(msgs) > 0 {
+			return msgs[len(msgs)-1].Text
+		}
+	}
+	return "Connection failed. Please try again."
+}
+func (h *Handler) joinError(w http.ResponseWriter, r *http.Request, message string) {
+	w.WriteHeader(http.StatusBadRequest)
+	h.templates.ExecuteTemplate(w, "index.html", map[string]interface{}{"Error": message, "DefaultNick": r.FormValue("nick"), "ChannelInput": r.FormValue("channel"), "Servers": AvailableServers, "DefaultServer": r.FormValue("server"), "Theme": h.getTheme(w, r), "CSRFToken": h.GetCSRFToken(r)})
+}
+
+func (h *Handler) DisconnectHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := h.getOrCreateSessionID(w, r)
+	h.joinMu.Lock()
+	defer h.joinMu.Unlock()
+	if s := h.sessions.Get(id); s != nil {
+		s.Close()
+		h.sessions.Delete(id)
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func validSessionID(id string) bool {
+	if len(id) != SessionIDLength*2 {
+		return false
+	}
+	_, err := hex.DecodeString(id)
+	return err == nil
 }
