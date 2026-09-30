@@ -1,0 +1,30 @@
+// npm install --prefix /tmp/webirc-browser playwright
+// WEBIRC_BROWSER_FIXTURE=1 go test ./internal/web -run '^TestBrowserFixture$' -v
+// NODE_PATH=/tmp/webirc-browser/node_modules node scripts/browser_test.cjs
+const {chromium}=require('playwright');
+const assert=require('node:assert/strict');
+(async()=>{
+ const browser=await chromium.launch({headless:true});
+ const context=await browser.newContext({javaScriptEnabled:false});
+ const page=await context.newPage(); let messageFetches=0;
+ page.on('request',r=>{if(r.url().includes('/messages'))messageFetches++});
+ const base='http://127.0.0.1:18181';
+ try{
+  await page.goto(base);assert(await page.locator('input[name=csrf_token]').first().getAttribute('value'));
+  await page.locator('#nick').fill('9Alice');await page.getByRole('button',{name:'Join Chat',exact:true}).click();await page.waitForURL(base+'/join');assert((await page.locator('[role=alert]').innerText()).includes('Nickname'));assert.equal(await page.locator('#nick').inputValue(),'9Alice');
+  await page.locator('#nick').fill('Alice123');await page.locator('#channel').fill('#test');const start=Date.now();await page.getByRole('button',{name:'Join Chat',exact:true}).click();await page.waitForURL(/connecting/);assert(Date.now()-start<2000,'join blocked on delayed fixture dial');console.log('PASS immediate connecting transition, first-page CSRF, invalid input preserved');
+  await page.waitForURL(/\/chan\//,{timeout:15000});const frame=page.frameLocator('iframe[name=messages]');await frame.getByText('live-message',{exact:true}).waitFor();const text=await frame.locator('body').innerText();assert(text.includes('history-50')&&text.includes('history-59'));assert(!text.includes('history-49'));assert(text.indexOf('history-50')<text.indexOf('history-59'));assert(text.indexOf('history-59')<text.indexOf('live-message'));console.log('PASS newest ten history messages, chronological history before live');
+  const before=messageFetches;await page.locator('#message-input').fill('unsent draft');await page.waitForTimeout(26000);assert(messageFetches>=before+2,'iframe did not fetch twice');assert.equal(await page.locator('#message-input').inputValue(),'unsent draft');console.log('PASS two real iframe refresh fetches; unsent draft preserved');
+  await page.locator('#message-input').fill('hello browser');await page.getByRole('button',{name:'Send',exact:true}).click();await page.frameLocator('iframe').getByText('hello browser',{exact:true}).waitFor();await page.reload();assert.equal(await page.frameLocator('iframe').getByText('hello browser',{exact:true}).count(),1);console.log('PASS send, reload without resubmission');
+  await page.locator('#message-input').fill('/nick Taken');await page.getByRole('button',{name:'Send',exact:true}).click();await page.frameLocator('iframe').getByText('** Nickname in use',{exact:true}).waitFor();assert.equal(await page.locator('.status-info .nick').innerText(),'Alice123');
+  await page.locator('#message-input').fill('/nick Alice456');await page.getByRole('button',{name:'Send',exact:true}).click();await page.waitForTimeout(100);await page.reload();assert.equal(await page.locator('.status-info .nick').innerText(),'Alice456');console.log('PASS rejected/accepted nickname ACK handling with digits');
+  await page.locator('#message-input').fill('/join #other');await page.getByRole('button',{name:'Send',exact:true}).click();await page.waitForURL(/\/chan\/%23other/);assert.equal(await page.locator('input[name=channel]').first().getAttribute('value'),'#other');
+  await page.locator('#message-input').fill('/msg Bob hello');await page.getByRole('button',{name:'Send',exact:true}).click();await page.waitForURL(/\/chan\/Bob/);await page.frameLocator('iframe').getByText('hello',{exact:true}).waitFor();await page.frameLocator('iframe').getByText('reply to hello',{exact:true}).waitFor();console.log('PASS /join changes outer composer; direct messages');
+  await page.goto(base+'/chan/%23locked');await page.goto(base+'/connecting?channel=%23locked');await page.getByText('Invite only',{exact:true}).waitFor();assert.equal(await page.locator('meta[http-equiv=refresh]').count(),0);console.log('PASS channel rejection stops connecting refresh');
+  await page.getByRole('button',{name:'Cancel connection',exact:true}).click();await page.waitForURL(base+'/');await page.locator('#nick').fill('Reject');await page.getByRole('button',{name:'Join Chat',exact:true}).click();await page.getByText('Erroneous nickname',{exact:true}).waitFor({timeout:15000});assert.equal(await page.locator('meta[http-equiv=refresh]').count(),0);console.log('PASS registration rejection visible and terminal');
+  await page.getByRole('link',{name:'Try again',exact:true}).click();await page.locator('#nick').fill('Retry2');await page.locator('#channel').fill('#test');await page.getByRole('button',{name:'Join Chat',exact:true}).click();await page.waitForURL(/connecting/);await page.getByRole('button',{name:'Cancel connection',exact:true}).click();await page.waitForURL(base+'/');await page.waitForTimeout(4500);await page.locator('#nick').fill('Final2');await page.locator('#channel').fill('#test');await page.getByRole('button',{name:'Join Chat',exact:true}).click();await page.waitForURL(/\/chan\//,{timeout:15000});console.log('PASS failed retry, cancel during dial, subsequent reconnect');
+  await page.getByRole('link',{name:'⚙ Settings'}).click();await page.locator('input[name=theme][value=light]').check();await page.getByRole('button',{name:'Save Settings'}).click();await page.reload();assert((await page.locator('body').getAttribute('class')).includes('theme-light'));console.log('PASS theme settings persist over HTTP');
+  await page.locator('#message-input').fill('/part');await page.getByRole('button',{name:'Send',exact:true}).click();await page.waitForURL(base+'/');console.log('PASS /part returns home');
+  console.log('All no-JavaScript browser flows passed. Message document requests:',messageFetches);
+ }finally{await browser.close()}
+})().catch(e=>{console.error(e);process.exit(1)});

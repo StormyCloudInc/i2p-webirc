@@ -71,17 +71,17 @@ const (
 )
 
 var (
-	listenAddr         = flag.String("listen", ":8080", "HTTP server listen address")
-	samAddr            = flag.String("sam-addr", "127.0.0.1:7656", "SAM bridge address")
-	ircDest            = flag.String("irc-dest", "", "I2P IRC server destination (required, for backwards compat)")
-	botChannels        = flag.String("bot-channels", "#loadtest,#stormycloud", "Comma-separated list of channels for Postman history bot")
-	simpBotChannels    = flag.String("simp-bot-channels", "#simp,#ru,#en,#guessthesong,#gatheryourparty", "Comma-separated list of channels for Simp IRC history bot")
-	botLocalAddr       = flag.String("bot-local-addr", "127.0.0.1:6668", "Local TCP address for Postman bot")
-	simpBotLocalAddr   = flag.String("simp-bot-local-addr", "127.0.0.1:6667", "Local TCP address for Simp bot")
-	botNick            = flag.String("bot-nick", "StormyBot", "Bot nickname")
+	listenAddr          = flag.String("listen", ":8080", "HTTP server listen address")
+	samAddr             = flag.String("sam-addr", "127.0.0.1:7656", "SAM bridge address")
+	ircDest             = flag.String("irc-dest", "", "I2P IRC server destination (required, for backwards compat)")
+	botChannels         = flag.String("bot-channels", "#i2p-chat,#i2p,#i2pd,#saltr,#torrents,#freedom,#i2p-news,#ai-chat", "Comma-separated list of channels for Postman history bot")
+	simpBotChannels     = flag.String("simp-bot-channels", "#simp,#ru,#en,#guessthesong,#gatheryourparty", "Comma-separated list of channels for Simp IRC history bot")
+	botLocalAddr        = flag.String("bot-local-addr", "127.0.0.1:6668", "Local TCP address for Postman bot")
+	simpBotLocalAddr    = flag.String("simp-bot-local-addr", "127.0.0.1:6667", "Local TCP address for Simp bot")
+	botNick             = flag.String("bot-nick", "StormyBot", "Bot nickname")
 	postmanNickServPass = flag.String("postman-nickserv-pass", "", "NickServ password for Postman server (optional)")
-	simpNickServPass   = flag.String("simp-nickserv-pass", "", "NickServ password for Simp server (optional)")
-	debugMode          = flag.Bool("debug", false, "Enable debug endpoints (/status, /debug/*)")
+	simpNickServPass    = flag.String("simp-nickserv-pass", "", "NickServ password for Simp server (optional)")
+	debugMode           = flag.Bool("debug", false, "Enable debug endpoints (/status, /debug/*)")
 )
 
 func main() {
@@ -132,12 +132,8 @@ func main() {
 				UseBot:       true, // +B mode
 				ServerName:   "postman",
 			})
-			if err := postmanBot.Start(); err != nil {
-				log.Printf("Warning: Failed to start Postman history bot: %v", err)
-			} else {
-				log.Printf("Postman history bot started successfully")
-				historyBots["postman"] = postmanBot
-			}
+			historyBots["postman"] = postmanBot
+			go postmanBot.Run()
 		}
 	}
 
@@ -161,12 +157,8 @@ func main() {
 				UseBot:       true, // +B mode
 				ServerName:   "simp",
 			})
-			if err := simpBot.Start(); err != nil {
-				log.Printf("Warning: Failed to start Simp history bot: %v", err)
-			} else {
-				log.Printf("Simp history bot started successfully")
-				historyBots["simp"] = simpBot
-			}
+			historyBots["simp"] = simpBot
+			go simpBot.Run()
 		}
 	}
 
@@ -196,6 +188,7 @@ func main() {
 			handler.ChannelHandler(w, r)
 		}
 	})
+	mux.HandleFunc("/disconnect", handler.DisconnectHandler)
 	mux.HandleFunc("/send", handler.SendHandler)
 	mux.HandleFunc("/settings", handler.SettingsHandler)
 	mux.HandleFunc("/health", handler.HealthHandler)

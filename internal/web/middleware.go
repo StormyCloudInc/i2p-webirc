@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -139,7 +140,7 @@ func (h *Handler) CSRFMiddleware(next http.Handler) http.Handler {
 				Name:     "csrf_token",
 				Value:    token,
 				Path:     "/",
-				HttpOnly: false, // Must be readable by forms
+				HttpOnly: true, // Forms receive the token from the server
 				Secure:   isSecureRequest(r),
 				SameSite: http.SameSiteStrictMode,
 			})
@@ -156,12 +157,16 @@ func (h *Handler) CSRFMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
+		r = r.WithContext(context.WithValue(r.Context(), contextKey("csrf"), token))
 		next.ServeHTTP(w, r)
 	})
 }
 
 // GetCSRFToken retrieves the CSRF token for the current request
 func (h *Handler) GetCSRFToken(r *http.Request) string {
+	if token, ok := r.Context().Value(contextKey("csrf")).(string); ok {
+		return token
+	}
 	cookie, err := r.Cookie("csrf_token")
 	if err != nil {
 		return ""

@@ -14,11 +14,12 @@
         <p class="subtitle">JavaScript-free IRC client over I2P</p>
         <p class="security-notice">🔒 Secured connection through encrypted SAM tunnel</p>
 
+        {{if .Error}}<p role="alert" class="error">{{.Error}}</p>{{end}}
         <form method="POST" action="/join" class="join-form">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
             <div class="form-group">
                 <label for="nick">Nickname:</label>
-                <input type="text" id="nick" name="nick" value="{{.DefaultNick}}" required>
+                <input type="text" id="nick" name="nick" value="{{.DefaultNick}}" maxlength="30" required>
             </div>
 
             <div class="form-group">
@@ -32,7 +33,7 @@
 
             <div class="form-group">
                 <label for="channel">Channel:</label>
-                <input type="text" id="channel" name="channel" placeholder="Leave empty for server default">
+                <input type="text" id="channel" name="channel" value="{{.ChannelInput}}" maxlength="50" placeholder="Leave empty for server default">
                 <small class="form-hint">Postman: #i2p-chat | Simp: #simp</small>
             </div>
 

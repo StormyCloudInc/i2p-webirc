@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"github.com/dustinfields/i2p-irc/internal/irc"
 	"log"
 	"net"
 	"strings"
@@ -18,14 +19,14 @@ import (
 
 // BotConfig holds configuration for a history bot
 type BotConfig struct {
-	Nick            string   // Bot nickname (e.g., "StormyBot")
-	LocalAddr       string   // Local TCP address (e.g., "127.0.0.1:6668")
-	Channels        []string // Channels to join
-	HistorySize     int      // Number of messages to keep per channel
-	NickServPass    string   // NickServ password (optional, for registered nicks)
-	UseInvisible    bool     // Set +i mode (invisible)
-	UseBot          bool     // Set +b mode (bot)
-	ServerName      string   // Server name for logging (e.g., "postman", "simp")
+	Nick         string   // Bot nickname (e.g., "StormyBot")
+	LocalAddr    string   // Local TCP address (e.g., "127.0.0.1:6668")
+	Channels     []string // Channels to join
+	HistorySize  int      // Number of messages to keep per channel
+	NickServPass string   // NickServ password (optional, for registered nicks)
+	UseInvisible bool     // Set +i mode (invisible)
+	UseBot       bool     // Set +b mode (bot)
+	ServerName   string   // Server name for logging (e.g., "postman", "simp")
 }
 
 // Message represents a single IRC message with metadata
@@ -46,8 +47,8 @@ type ChannelHistory struct {
 // NewChannelHistory creates a new channel history buffer
 func NewChannelHistory(size int) *ChannelHistory {
 	return &ChannelHistory{
-		messages: ring.New(size),
-		size:     size,
+		messages: ring.New(max(size, 1)),
+		size:     max(size, 1),
 	}
 }
 
@@ -64,25 +65,25 @@ func (ch *ChannelHistory) GetRecent(n int) []Message {
 	ch.mu.RLock()
 	defer ch.mu.RUnlock()
 
+	if n <= 0 {
+		return nil
+	}
 	if n > ch.size {
 		n = ch.size
 	}
 
-	messages := make([]Message, 0, n)
-	count := 0
+	messages := make([]Message, 0, ch.size)
 
 	// Walk backwards from current position
 	ch.messages.Do(func(v interface{}) {
-		if v != nil && count < n {
+		if v != nil {
 			messages = append(messages, v.(Message))
-			count++
 		}
 	})
 
-	// Reverse to get chronological order
-	for i := 0; i < len(messages)/2; i++ {
-		j := len(messages) - 1 - i
-		messages[i], messages[j] = messages[j], messages[i]
+	// The ring cursor points at the oldest slot. Retain the newest n.
+	if len(messages) > n {
+		messages = messages[len(messages)-n:]
 	}
 
 	return messages
@@ -90,6 +91,9 @@ func (ch *ChannelHistory) GetRecent(n int) []Message {
 
 // HistoryBot maintains IRC channel history
 type HistoryBot struct {
+	connMu       sync.RWMutex
+	writeMu      sync.Mutex
+	stopOnce     sync.Once
 	nick         string
 	baseNick     string // original nick before collision handling
 	nickSuffix   int    // suffix counter for nick collision handling
@@ -107,15 +111,15 @@ type HistoryBot struct {
 	histories   map[string]*ChannelHistory
 	historiesMu sync.RWMutex
 
-	conn          net.Conn
-	sam           *sam3.SAM
-	stream        *stream.StreamSession
-	stopCh        chan struct{}
-	stoppedCh     chan struct{}
-	registered    bool
-	registeredMu  sync.Mutex
-	identified    bool   // Whether we've identified with NickServ
-	identifiedMu  sync.Mutex
+	conn         net.Conn
+	sam          *sam3.SAM
+	stream       *stream.StreamSession
+	stopCh       chan struct{}
+	stoppedCh    chan struct{}
+	registered   bool
+	registeredMu sync.Mutex
+	identified   bool // Whether we've identified with NickServ
+	identifiedMu sync.Mutex
 }
 
 // NewHistoryBot creates a new history bot using SAM for I2P connections
@@ -194,9 +198,13 @@ func randomSuffix() string {
 // Start starts the history bot
 func (hb *HistoryBot) Start() error {
 	// Initialize channel histories
+	hb.historiesMu.Lock()
 	for _, channel := range hb.channels {
-		hb.histories[strings.ToLower(channel)] = NewChannelHistory(hb.historySize)
+		if hb.histories[strings.ToLower(channel)] == nil {
+			hb.histories[strings.ToLower(channel)] = NewChannelHistory(hb.historySize)
+		}
 	}
+	hb.historiesMu.Unlock()
 
 	var conn net.Conn
 	var err error
@@ -205,13 +213,13 @@ func (hb *HistoryBot) Start() error {
 	if hb.localAddr != "" {
 		// Local TCP mode - connect directly to local I2P tunnel
 		log.Printf("%s Connecting via local tunnel: %s", hb.logPrefix(), hb.localAddr)
-		conn, err = net.Dial("tcp", hb.localAddr)
+		conn, err = net.DialTimeout("tcp", hb.localAddr, 30*time.Second)
 		if err != nil {
 			return fmt.Errorf("failed to connect to local IRC tunnel %s: %w", hb.localAddr, err)
 		}
 	} else {
 		// SAM mode - connect via I2P SAM bridge
-		samClient, err := sam3.NewSAM(hb.samAddr)
+		samClient, err := irc.NewBoundedSAM(hb.samAddr, 90*time.Second)
 		if err != nil {
 			return fmt.Errorf("failed to connect to SAM: %w", err)
 		}
@@ -247,9 +255,9 @@ func (hb *HistoryBot) Start() error {
 
 		// Dial the destination - go-sam-go's Dial handles lookup internally
 		if port != "" {
-			conn, err = streamSession.Dial(dest + ":" + port)
+			conn, err = irc.DialSAMStream(samClient, streamSession, dest+":"+port, 90*time.Second)
 		} else {
-			conn, err = streamSession.Dial(dest)
+			conn, err = irc.DialSAMStream(samClient, streamSession, dest, 90*time.Second)
 		}
 		if err != nil {
 			samClient.Close()
@@ -257,12 +265,12 @@ func (hb *HistoryBot) Start() error {
 		}
 	}
 
-	hb.conn = conn
+	hb.setConn(conn)
 	log.Printf("%s CONNECTED to IRC server as %s", hb.logPrefix(), hb.nick)
 
 	// Send initial IRC commands
-	fmt.Fprintf(conn, "NICK %s\r\n", hb.nick)
-	fmt.Fprintf(conn, "USER %s 0 * :%s\r\n", hb.nick, hb.nick)
+	hb.send("NICK %s\r\n", hb.nick)
+	hb.send("USER webirc 0 * :%s\r\n", hb.nick)
 	log.Printf("%s Sent NICK and USER, waiting for registration...", hb.logPrefix())
 
 	// Start message reader (will join channels after receiving 001)
@@ -273,22 +281,32 @@ func (hb *HistoryBot) Start() error {
 
 // Stop stops the history bot
 func (hb *HistoryBot) Stop() {
-	close(hb.stopCh)
-	if hb.conn != nil {
-		hb.conn.Close()
-	}
-	if hb.sam != nil {
-		hb.sam.Close()
-	}
-	<-hb.stoppedCh
+	hb.stopOnce.Do(func() {
+		hb.registeredMu.Lock()
+		hb.registered = false
+		hb.registeredMu.Unlock()
+		close(hb.stopCh)
+		if conn := hb.getConn(); conn != nil {
+			conn.Close()
+		}
+	})
 }
 
 // readMessages reads and processes IRC messages
 func (hb *HistoryBot) readMessages() {
 	defer close(hb.stoppedCh)
+	defer func() {
+		if hb.stream != nil {
+			hb.stream.Close()
+		}
+		if hb.sam != nil {
+			hb.sam.Close()
+		}
+	}()
+	defer func() { hb.registeredMu.Lock(); hb.registered = false; hb.registeredMu.Unlock() }()
 
 	for {
-		scanner := bufio.NewScanner(hb.conn)
+		scanner := bufio.NewScanner(hb.getConn())
 		for scanner.Scan() {
 			select {
 			case <-hb.stopCh:
@@ -297,7 +315,6 @@ func (hb *HistoryBot) readMessages() {
 			}
 
 			line := scanner.Text()
-			log.Printf("%s Received: %s", hb.logPrefix(), line)
 			hb.processMessage(line)
 		}
 
@@ -331,9 +348,13 @@ func (hb *HistoryBot) reconnect() bool {
 	const maxDelay = 2 * time.Minute
 
 	// Close old connections completely
-	if hb.conn != nil {
-		hb.conn.Close()
-		hb.conn = nil
+	if hb.stream != nil {
+		hb.stream.Close()
+		hb.stream = nil
+	}
+	if conn := hb.getConn(); conn != nil {
+		conn.Close()
+		hb.setConn(nil)
 	}
 	if hb.sam != nil {
 		hb.sam.Close()
@@ -366,7 +387,7 @@ func (hb *HistoryBot) reconnect() bool {
 		// Use local TCP if localAddr is set, otherwise use SAM
 		if hb.localAddr != "" {
 			// Local TCP mode - simple reconnect
-			conn, err = net.Dial("tcp", hb.localAddr)
+			conn, err = net.DialTimeout("tcp", hb.localAddr, 30*time.Second)
 			if err != nil {
 				log.Printf("%s Failed to connect to local tunnel: %v", hb.logPrefix(), err)
 				delay *= 2
@@ -388,7 +409,7 @@ func (hb *HistoryBot) reconnect() bool {
 				}
 			}
 
-			samClient, err := sam3.NewSAM(hb.samAddr)
+			samClient, err := irc.NewBoundedSAM(hb.samAddr, 90*time.Second)
 			if err != nil {
 				log.Printf("[HistoryBot] Failed to connect to SAM: %v", err)
 				delay *= 2
@@ -425,9 +446,9 @@ func (hb *HistoryBot) reconnect() bool {
 
 			// Dial the destination - go-sam-go's Dial handles lookup internally
 			if port != "" {
-				conn, err = streamSession.Dial(dest + ":" + port)
+				conn, err = irc.DialSAMStream(samClient, streamSession, dest+":"+port, 90*time.Second)
 			} else {
-				conn, err = streamSession.Dial(dest)
+				conn, err = irc.DialSAMStream(samClient, streamSession, dest, 90*time.Second)
 			}
 			if err != nil {
 				log.Printf("[HistoryBot] Dial failed: %v", err)
@@ -444,12 +465,12 @@ func (hb *HistoryBot) reconnect() bool {
 		}
 
 		// Success! Update connection state
-		hb.conn = conn
+		hb.setConn(conn)
 		log.Printf("%s RECONNECTED successfully", hb.logPrefix())
 
 		// Re-register with IRC
-		fmt.Fprintf(hb.conn, "NICK %s\r\n", hb.nick)
-		fmt.Fprintf(hb.conn, "USER %s 0 * :%s\r\n", hb.nick, hb.nick)
+		hb.send("NICK %s\r\n", hb.nick)
+		hb.send("USER %s 0 * :%s\r\n", hb.nick, hb.nick)
 
 		// Note: channels will be rejoined when we receive 001 in processMessage
 		return true
@@ -472,7 +493,7 @@ func (hb *HistoryBot) processMessage(line string) {
 	// Handle PING
 	if strings.HasPrefix(line, "PING ") {
 		pong := strings.Replace(line, "PING", "PONG", 1)
-		fmt.Fprintf(hb.conn, "%s\r\n", pong)
+		hb.send("%s\r\n", pong)
 		return
 	}
 
@@ -514,30 +535,23 @@ func (hb *HistoryBot) processMessage(line string) {
 
 			// Set user modes (+B for bot - capital B on most IRC networks)
 			if hb.useBot {
-				fmt.Fprintf(hb.conn, "MODE %s +B\r\n", hb.nick)
+				hb.send("MODE %s +B\r\n", hb.nick)
 				log.Printf("%s Setting mode +B", hb.logPrefix())
 			}
 			if hb.useInvisible {
-				fmt.Fprintf(hb.conn, "MODE %s +i\r\n", hb.nick)
+				hb.send("MODE %s +i\r\n", hb.nick)
 				log.Printf("%s Setting mode +i", hb.logPrefix())
 			}
 
 			// Identify with NickServ if password is set
 			if hb.nickServPass != "" {
-				fmt.Fprintf(hb.conn, "PRIVMSG NickServ :identify %s\r\n", hb.nickServPass)
+				hb.send("PRIVMSG NickServ :identify %s\r\n", hb.nickServPass)
 				log.Printf("%s Identifying with NickServ...", hb.logPrefix())
 			}
 
-			// Wait 20 seconds before joining channels to ensure full connection
-			log.Printf("%s Waiting 20 seconds before joining channels...", hb.logPrefix())
-			go func() {
-				time.Sleep(20 * time.Second)
-				log.Printf("%s Joining channels...", hb.logPrefix())
-				for _, channel := range hb.channels {
-					fmt.Fprintf(hb.conn, "JOIN %s\r\n", channel)
-					log.Printf("%s Joining channel: %s", hb.logPrefix(), channel)
-				}
-			}()
+			for _, channel := range hb.channels {
+				hb.send("JOIN %s\r\n", channel)
+			}
 		} else {
 			hb.registeredMu.Unlock()
 		}
@@ -558,7 +572,7 @@ func (hb *HistoryBot) processMessage(line string) {
 			hb.nick = fmt.Sprintf("%s_ALT%d", hb.baseNick, hb.nickSuffix)
 		}
 		log.Printf("%s Nick in use, trying alternate: %s", hb.logPrefix(), hb.nick)
-		fmt.Fprintf(hb.conn, "NICK %s\r\n", hb.nick)
+		hb.send("NICK %s\r\n", hb.nick)
 		return
 
 	case "NOTICE":
@@ -632,7 +646,6 @@ func (hb *HistoryBot) addMessage(channel string, msg Message) {
 
 	if exists {
 		history.Add(msg)
-		log.Printf("%s [%s] <%s> %s", hb.logPrefix(), channel, msg.Nick, msg.Content)
 	}
 }
 
@@ -642,7 +655,7 @@ func (hb *HistoryBot) IsHealthy() bool {
 	registered := hb.registered
 	hb.registeredMu.Unlock()
 
-	return registered && hb.conn != nil
+	return registered
 }
 
 // GetHistory returns recent messages for a channel
@@ -658,4 +671,54 @@ func (hb *HistoryBot) GetHistory(channel string, limit int) []Message {
 	}
 
 	return history.GetRecent(limit)
+}
+
+func (hb *HistoryBot) getConn() net.Conn {
+	hb.connMu.RLock()
+	defer hb.connMu.RUnlock()
+	return hb.conn
+}
+func (hb *HistoryBot) setConn(conn net.Conn) {
+	hb.connMu.Lock()
+	defer hb.connMu.Unlock()
+	hb.conn = conn
+	select {
+	case <-hb.stopCh:
+		if conn != nil {
+			conn.Close()
+		}
+	default:
+	}
+}
+func (hb *HistoryBot) send(format string, args ...interface{}) {
+	hb.writeMu.Lock()
+	defer hb.writeMu.Unlock()
+	if conn := hb.getConn(); conn != nil {
+		conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+		fmt.Fprintf(conn, format, args...)
+		conn.SetWriteDeadline(time.Time{})
+	}
+}
+
+// Run retries initial tunnel failures as well as subsequent disconnections.
+func (hb *HistoryBot) Run() {
+	delay := 5 * time.Second
+	for {
+		select {
+		case <-hb.stopCh:
+			return
+		default:
+		}
+		if err := hb.Start(); err == nil {
+			<-hb.stoppedCh
+			return
+		}
+		log.Printf("%s History tunnel unavailable; retrying", hb.logPrefix())
+		select {
+		case <-hb.stopCh:
+			return
+		case <-time.After(delay):
+		}
+		delay = min(delay*2, 2*time.Minute)
+	}
 }

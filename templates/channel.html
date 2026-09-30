@@ -70,6 +70,7 @@
                     </a>
                     {{end}}
 
+                    <form method="POST" action="/disconnect"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button type="submit" class="btn btn-secondary">Disconnect</button></form>
                     <div class="settings-link">
                         <a href="#settings">⚙ Settings</a>
                     </div>
@@ -84,7 +85,7 @@
                         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                         <input type="hidden" name="channel" value="{{.Channel}}">
                         <input type="hidden" name="show_users" value="{{.ShowUsers}}">
-                        <input type="text" name="message" id="message-input" placeholder="Type a message or /command..." autocomplete="off" autofocus>
+                        <input type="text" name="message" id="message-input" placeholder="Type a message or /command..." autocomplete="off" maxlength="450" autofocus>
                         <button type="submit" class="btn btn-send">Send</button>
                     </form>
                 </div>

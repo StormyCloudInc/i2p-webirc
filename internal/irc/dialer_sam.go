@@ -3,8 +3,8 @@ package irc
 import (
 	"fmt"
 	"net"
-	"strings"
 	"sync"
+	"time"
 
 	sam3 "github.com/go-i2p/go-sam-go"
 	"github.com/go-i2p/go-sam-go/stream"
@@ -22,6 +22,7 @@ type SamIRCDialer struct {
 	IRCDest    string // e.g. I2P IRC destination
 	SessionID  string // used as tunnel name
 
+	closed bool
 	mu     sync.Mutex
 	client *sam3.SAM
 	stream *stream.StreamSession
@@ -32,14 +33,18 @@ type SamIRCDialer struct {
 func (d *SamIRCDialer) Dial() (net.Conn, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.closed {
+		return nil, fmt.Errorf("dialer closed")
+	}
 
 	// Lazy initialization on first dial
 	if d.client == nil {
-		client, err := sam3.NewSAM(d.SAMAddress)
+		client, err := NewBoundedSAM(d.SAMAddress, 90*time.Second)
 		if err != nil {
 			return nil, fmt.Errorf("failed to connect to SAM bridge: %w", err)
 		}
 		d.client = client
+		client.Conn.SetDeadline(time.Now().Add(90 * time.Second))
 
 		keys, err := client.NewKeys()
 		if err != nil {
@@ -57,29 +62,10 @@ func (d *SamIRCDialer) Dial() (net.Conn, error) {
 			return nil, fmt.Errorf("failed to create stream session: %w", err)
 		}
 		d.stream = streamSession
+		client.Conn.SetDeadline(time.Time{})
 	}
 
-	// Parse destination and port (format: "host" or "host:port")
-	dest := d.IRCDest
-	port := ""
-	if idx := strings.LastIndex(dest, ":"); idx != -1 {
-		// Check if this looks like a port (digits after colon)
-		possiblePort := dest[idx+1:]
-		if _, err := fmt.Sscanf(possiblePort, "%d", new(int)); err == nil {
-			port = possiblePort
-			dest = dest[:idx]
-		}
-	}
-
-	// Dial the destination - go-sam-go's Dial handles lookup internally
-	var conn net.Conn
-	var err error
-	if port != "" {
-		// Dial with port appended
-		conn, err = d.stream.Dial(dest + ":" + port)
-	} else {
-		conn, err = d.stream.Dial(dest)
-	}
+	conn, err := DialSAMStream(d.client, d.stream, d.IRCDest, 90*time.Second)
 	if err != nil {
 		// Dial failed - reset the SAM session so next attempt creates fresh connection
 		d.resetSession()
@@ -106,6 +92,7 @@ func (d *SamIRCDialer) resetSession() {
 func (d *SamIRCDialer) Close() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.closed = true
 
 	var errs []error
 

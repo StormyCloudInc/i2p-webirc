@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Connecting - I2P WebIRC</title>
     <link rel="stylesheet" href="/static/style.css">
-    <meta http-equiv="refresh" content="2">
+    {{if and (ne .Status "failed") (not .Error)}}<meta http-equiv="refresh" content="2">{{end}}
 </head>
 <body class="theme-{{.Theme}}">
 <div class="container center">
@@ -15,7 +15,9 @@
         <p class="subtitle">Connecting to IRC over I2P...</p>
 
         <div class="connecting-status">
-            {{if .Registered}}
+            {{if .Error}}
+            <div class="status-message error"><h2>Connection Failed</h2><p>{{.Error}}</p><a href="/">Try again</a></div>
+            {{else if .Registered}}
             <div class="status-message">
                 <h2>Joining Channel</h2>
                 <p>Sending JOIN command to {{.Channel}}...</p>
@@ -58,6 +60,7 @@
                 </p>
             </div>
 
+            <form method="POST" action="/disconnect"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button type="submit" class="btn">Cancel connection</button></form>
             <div class="info">
                 <p><small>Nick: <strong>{{.Nick}}</strong></small></p>
                 <p><small>Channel: <strong>{{.Channel}}</strong></small></p>

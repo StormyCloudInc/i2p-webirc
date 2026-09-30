@@ -30,15 +30,15 @@ A JavaScript-free web IRC client for the I2P network using SAMv3. Features multi
    - To enable SAM: Configure your I2P router to enable the SAM application
    - [Download I2P](https://geti2p.net/)
 
-2. **Go** 1.21 or higher
+2. **Go** 1.26.8 or higher
    - [Download Go](https://golang.org/dl/)
 
 ## Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/i2p-irc.git
-cd i2p-irc
+git clone https://github.com/StormyCloudInc/i2p-webirc.git
+cd i2p-webirc
 
 # Download dependencies
 go mod download
@@ -73,7 +73,7 @@ Then open `http://localhost:8080` in your browser.
 | Flag | Description | Default |
 |------|-------------|---------|
 | `-bot-nick` | Bot nickname | `StormyBot` |
-| `-bot-channels` | Comma-separated channels for Postman bot | `#loadtest,#stormycloud` |
+| `-bot-channels` | Comma-separated channels for Postman bot | `#i2p-chat,#i2p,#i2pd,#saltr,#torrents,#freedom,#i2p-news,#ai-chat` |
 | `-bot-local-addr` | Local TCP address for Postman bot | `127.0.0.1:6668` |
 | `-postman-nickserv-pass` | NickServ password for Postman server | - |
 | `-simp-bot-channels` | Comma-separated channels for Simp bot | `#simp,#ru,#en,...` |
@@ -222,7 +222,7 @@ The application uses sensible defaults but can be customized:
 
 ### Tech Stack
 
-- **Backend**: Go 1.21+ with `net/http` standard library
+- **Backend**: Go 1.26.8+ with `net/http` standard library
 - **Templating**: `html/template` for server-side rendering
 - **I2P Integration**: `github.com/go-i2p/go-sam-go` for SAM bridge connectivity
 - **No Frontend Dependencies**: Pure HTML5/CSS3, zero JavaScript
@@ -309,3 +309,29 @@ MIT License - See LICENSE file for details
 ---
 
 **Note**: This is a web-based IRC client designed for I2P. It requires an I2P router to function. Performance depends on I2P network conditions and tunnel establishment times.
+
+## Reliability and verification
+
+The browser remains JavaScript-free; CSP forbids scripts. Connecting uses a fast POST/303 transition followed by HTML refresh while SAM dialing runs in the background. Invalid supplied nicknames are shown back to the user, not silently replaced. Nonleading nickname digits are supported by IRC; registration failures are displayed and stop refresh. The IRC USER ident is `webirc`, independent of nickname characters. Nickname changes update the display only after a server acknowledgement.
+
+Channel history is the latest ten messages recorded by the configured history bot, imported once in chronological order before live messages, after the user's own JOIN confirmation. History is in memory and is lost on process restart. Bots retry initial tunnel failures; no history is available for channels they do not monitor. The messages iframe refreshes every 12 seconds with a distinct document URL and preserves the outer composer. `/join` moves the entire composer; `/quit` and Disconnect close the session. SAM TCP, HELLO, lookup and stream operations have deadlines; registration times out after two minutes.
+
+Go 1.26.8 is required by the updated `go-i2p/common`, `crypto`, and `logger` dependencies. Production can run a prebuilt static binary without installing Go. There is no Dockerfile or CI configuration in this repository to update.
+
+```sh
+go test -race ./... -timeout 45s
+go vet ./...
+go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o webirc-linux ./cmd/webirc
+```
+
+For repeatable real-browser checks with JavaScript disabled, run the opt-in loopback fixture in one terminal and the browser tests in another. These tests never contact public IRC or I2P. The fixture listens on 127.0.0.1:18181 and exits after three minutes.
+
+```sh
+WEBIRC_BROWSER_FIXTURE=1 go test -race ./internal/web -run '^TestBrowserFixture$' -v -timeout 4m
+npm install --prefix /tmp/webirc-browser playwright
+/tmp/webirc-browser/node_modules/.bin/playwright install chromium
+NODE_PATH=/tmp/webirc-browser/node_modules node scripts/browser_test.cjs
+```
+
+Before deployment, preserve the whole existing app directory and systemd unit, retain the old binary/templates/static assets together, and record hashes. Keep current SAM/tunnel addresses, monitored channels and NickServ configuration. Stage on a separate loopback port with history bots disabled before replacing the live app. Restarting the app disconnects users and clears in-memory history; routers and nginx do not need a restart. Verify `/health`, public HTTPS headers, first-visit Join, numeric nicknames, and channel readiness. Restore the matching backed-up directory and restart the app service if any required check fails.
