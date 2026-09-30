@@ -162,3 +162,19 @@ func TestRegistrationTimeout(t *testing.T) {
 		t.Fatal("registration timeout not terminal")
 	}
 }
+
+func TestCleanupCannotDeleteReplacement(t *testing.T) {
+	store := NewSessionStore()
+	old := NewIRCSession("same", nil, "Old", "webirc", "Test")
+	replacement := NewIRCSession("same", nil, "New", "webirc", "Test")
+	defer old.Close()
+	defer replacement.Close()
+	store.Set("same", old)
+	store.Set("same", replacement)
+	if store.DeleteIfCurrent("same", old) || store.Get("same") != replacement {
+		t.Fatal("stale cleanup deleted replacement")
+	}
+	if !store.DeleteIfCurrent("same", replacement) {
+		t.Fatal("current cleanup failed")
+	}
+}

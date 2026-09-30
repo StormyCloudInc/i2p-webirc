@@ -802,3 +802,14 @@ func (c *ChannelState) SetJoinError(reason string) {
 	c.joinPending = false
 	c.joined = false
 }
+
+// DeleteIfCurrent prevents cleanup snapshots from deleting a replacement session.
+func (ss *SessionStore) DeleteIfCurrent(id string, session *IRCSession) bool {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if ss.data[id] != session {
+		return false
+	}
+	delete(ss.data, id)
+	return true
+}

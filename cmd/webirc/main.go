@@ -281,11 +281,10 @@ func sessionCleanup(sessions *irc.SessionStore) {
 					reason, session.ID[:8], status, idleTime.Round(time.Second))
 
 				// Close the session (this also closes the SAM dialer)
-				session.Close()
-
-				// Remove from store
-				sessions.Delete(session.ID)
-				cleaned++
+				if sessions.DeleteIfCurrent(session.ID, session) {
+					session.Close()
+					cleaned++
+				}
 			}
 		}
 
